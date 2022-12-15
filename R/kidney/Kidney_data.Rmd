@@ -1,0 +1,165 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Libraries
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(sctransform)
+library(sctransform)
+library(glmGamPoi)
+```
+# Whole Dataset
+## Clean Data
+```{r}
+# ------- use previously created Seurat object -------
+kidney <- readRDS(file = "../../data/data_sets/kidney_demo_stewart.rds")
+dim(GetAssayData(kidney))
+
+# ------- use processed ones, with mt regress -------
+# kidney <- readRDS(file = "../../data/kidney_data/kidney_mt_regress.rds")
+# kidney_snn <- readRDS(file = "../../data/kidney_data/kidney_mt_snn_regress.rds")
+
+# ------- use processed ones, without mt regress -------
+# kidney <- readRDS(file = "../../data/kidney_data/kidney.rds")
+# kidney_snn <- readRDS(file = "../../data/kidney_data/kidney_snn.rds")
+```
+```{r}
+head(rownames(kidney@assays$RNA))
+```
+
+```{r, eval=False}
+kidney <- SCTransform(kidney)
+kidney <- RunPCA(kidney, features = VariableFeatures(object = kidney))
+kidney <- RunUMAP(kidney, dims = 1:30)
+kidney <- RunTSNE(kidney, dims = 1:30)
+DimPlot(kidney, reduction = "umap", group.by = "celltype", label = TRUE) + NoLegend()
+```
+
+```{r}
+kidney[["percent.mt"]] <- PercentageFeatureSet(kidney, pattern = "^MT-")
+
+kidney <- subset(kidney, subset = nFeature_RNA > 203 & nFeature_RNA < 7000 & nCount_RNA > 254 & nCount_RNA < 40000 & percent.mt < 20) 
+```
+
+## Reduce dimensions
+```{r}
+kidney <- SCTransform(kidney, vars.to.regress = "percent.mt", method = "glmGamPoi", verbose = FALSE)
+kidney <- RunPCA(kidney, features = VariableFeatures(object = kidney))
+```
+
+```{r, eval=FALSE}
+kidney[["kidney_general"]] <- "kidney_cells"
+VlnPlot(kidney, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), group.by = "kidney_general", ncol = 3)
+
+plot1 <- FeatureScatter(kidney, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = "kidney_general")
+plot1
+
+ncol(kidney)
+```
+
+## Find SNN
+```{r}
+n = ncol(kidney)
+dim(kidney)
+
+type = c("_", "_trimmed_", "_negedges_", "_trimmed_negedges_")
+id_type = 2
+dim = 30
+k = 5
+coff = 0.067
+ord = 15
+
+kidney <- FindNeighbors(kidney, reduction = "pca", dims = 1:dim, k.param=k, compute.SNN=TRUE, prune.SNN=coff)
+```
+
+```{r, eval=FALSE}
+kidney_snn_temp <- kidney@graphs[["SCT_snn"]]
+
+dim(kidney_snn_temp)
+kidney_snn <- kidney_snn_temp - diag(nrow=n, ncol=n)
+```
+
+```{r, eval=FALSE}
+# ------- limitation of nodes degrees -------
+for (i in 1:n){
+  to_delete <- order(kidney_snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+  kidney_snn[,i][to_delete] <- integer(n-ord)
+  kidney_snn[i,][to_delete] <- integer(n-ord)
+}
+```
+
+## Plot and save graphs 
+```{r setup}
+library(reticulate)
+virtualenv_create("scrna_proj")
+# py_install(c("networkx","matplotlib"), envname = "scrna_proj")
+use_virtualenv("scrna_proj")
+```
+
+```{python, eval=FALSE}
+import numpy as np
+import networkx as nx
+from matplotlib import pyplot as plt
+
+id_type, type = int(r.id_type)-1, r.type
+n = int(r.n)
+k = int(r.k)
+ord = int(r.ord)
+dim = int(r.dim)
+
+file_name = ''.join(["../../graphs/R_generated/kidney_all/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), ".gexf"])
+
+G = nx.from_numpy_matrix(r.kidney_snn)
+nx.write_gexf(G, file_name)
+
+G = nx.read_gexf(file_name)
+pos = nx.spring_layout(G)
+plt.cla()
+nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+file_name = ''.join(["../../graphs/R_generated/kidney_all/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), ".png"])
+plt.savefig(file_name, bbox_inches='tight')
+```
+
+## Clustering
+```{r}
+DimPlot(kidney, reduction = "pca", group.by="celltype") + NoLegend()
+```
+
+```{r}
+library(randomcoloR)
+kidney <- RunUMAP(kidney, reduction = "pca", dims = 1:10)
+DimPlot(kidney, reduction = "umap", group.by="celltype", repel = TRUE, label = TRUE, label.size = 3, cols = DiscretePalette(length(unique(kidney$celltype))) )+ NoLegend()
+```
+
+```{r}
+DimPlot(kidney, reduction = "umap", group.by="celltype")+ NoLegend()
+```
+
+
+```{r, eval=FALSE}
+# ------- k-means -------
+km.out <- kmeans(kidney@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, centers=12, nstart=5)
+kidney <- AddMetaData(kidney, metadata=km.out$cluster, col.name="kmeans")
+DimPlot(kidney, reduction = "umap", group.by="kmeans") # + NoLegend()
+```
+
+```{r, eval=FALSE}
+# ------- Seurat clustering -------
+kidney <- FindClusters(kidney, verbose = FALSE, resolution = 0.2, algorithm = 1)
+DimPlot(kidney, reduction = "umap", group.by="seurat_clusters") + NoLegend()
+```
+
+```{r}
+# ------- Seurat clustering -------
+kidney <- FindClusters(kidney, verbose = FALSE, resolution = 0.8, algorithm = 1)
+DimPlot(kidney, reduction = "umap", group.by="seurat_clusters") + NoLegend()
+```
+
+
+

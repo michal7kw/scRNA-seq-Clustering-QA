@@ -1,0 +1,45 @@
+data/
+graphs/
+Python_Functions/
+R_plots/
+
+R/benchmarks
+R/motor      
+R/pbmc3k
+
+R/kidney/Kidney_assess_QA_clusters.nb.html
+# R/kidney/Kidney_assess_QA_clusters_ENDO.Rmd
+R/kidney/Kidney_assess_QA_clusters_ENDO.nb.html
+R/kidney/Kidney_assess_QA_clusters_MNP.Rmd
+R/kidney/Kidney_assess_QA_clusters_MNP.nb.html
+# R/kidney/Kidney_benchmark_clusters.Rmd
+R/kidney/Kidney_benchmark_clusters.nb.html
+# R/kidney/Kidney_data.Rmd
+R/kidney/Kidney_data.nb.html
+# R/kidney/Kidney_data_ENDO.Rmd
+R/kidney/Kidney_data_ENDO.nb.html
+R/kidney/Kidney_data_MNP.Rmd
+R/kidney/Kidney_data_MNP.nb.html
+R/kidney/Kidney_data_subsampling_clusters.Rmd
+R/kidney/Kidney_data_subsampling_clusters.nb.html
+R/kidney/Kidney_disconected_components.Rmd
+R/kidney/Kidney_reference.Rmd
+R/kidney/Kidney_reference.nb.html
+R/kidney/Kidney_simulated_data.Rmd
+R/kidney/Kidney_simulated_data.nb.html
+R/kidney/Kidney_subsampling.Rmd
+R/kidney/README.txt
+R/kidney/fpc
+R/kidney/html
+R/kidney/kmean_index_stats
+R/kidney/kmean_index_stats_2
+R/kidney/kmean_stats
+
+
+/get-pip.py
+/main.py
+/plots.ipynb
+
+.vscode/
+.Rhistory
+.RData

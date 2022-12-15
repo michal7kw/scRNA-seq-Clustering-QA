@@ -1,0 +1,189 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+takes QA clustered graph:   QA_clusters
+takes Seurat object:        selected_a              (from "Kidney_data" notebook, original graph)
+takes Seurat object:        selected_a_2            (from "Kidney_data" notebook, original graph)
+# Libraries
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(sctransform)
+library(sctransform)
+library(glmGamPoi)
+```
+
+# Compare clusters
+## Import QA clusters (only the first sample)
+```{r setup, eval=FALSE}
+library(reticulate)
+virtualenv_create("scrna_proj")
+# py_install(c("networkx","matplotlib"), envname = "scrna_proj")
+use_virtualenv("scrna_proj")
+```
+
+```{python, eval=FALSE}
+import networkx as nx
+dataset = "kidney_endo/"
+ex_number = "1"
+
+QA_output_name = "961_cqm_graph_snn_k8_dim20_g0005_trimmed_8_pruned.gexf"
+QA_clusters = nx.read_gexf(''.join(["../../graphs/Python_generated/", dataset, QA_output_name]))
+
+# ------- CHOSE THE CORRECT OPTION BASED ON THE EXPORTED FORMAT -------
+colors = [y[sorted(y.keys())[-1]] for x,y in sorted(QA_clusters.nodes(data=True))]
+colors = [y[sorted(y.keys())[-1]] for x,y in QA_clusters.nodes(data=True)]
+len(colors)
+```
+
+## Merge Clusters MetaData
+```{r}
+ex_number <- py$ex_number
+my_cols <- c('#003366','#00cc99','#cc9900','#ff0066','#6699ff','#E6C122','#000195','#B95FBB','#28CECA','#ff9a36','#2FF18B','#aeadb3','#CCB1F1','#D4D915','#A4DFF2','#4B4BF7')
+
+colors <- py$colors
+colors <- unlist(colors)
+selected_a <- AddMetaData(selected_a_2, metadata=colors, col.name="QA")
+DimPlot(selected_a, reduction = "pca", group.by="QA", cols=my_cols[1:5]) + NoLegend()
+```
+
+```{r, eval=FALSE}
+dataset = py$dataset
+png(file=paste("../../graphs/R_generated/", dataset, "sel_Seurat", ex_number, ".png", sep=""))
+DimPlot(selected_a_2, reduction = "umap", group.by="seurat_clusters") + NoLegend()
+dev.off()
+
+png(file=paste("../../graphs/R_generated/", dataset, "sel_QA", ex_number, ".png", sep=""))
+DimPlot(selected_a_2, reduction = "umap", group.by="QA") + NoLegend()
+dev.off()
+
+png(file=paste("../../graphs/R_generated/", dataset, "sel_truth", ex_number, ".png", sep=""))
+DimPlot(selected_a_2, reduction = "umap", group.by="celltype") + NoLegend()
+dev.off()
+```
+
+```{r}
+redu = "umap"
+DimPlot(selected_a_2, reduction = redu, group.by="QA", cols=my_cols[1:5]) # + NoLegend()
+DimPlot(selected_a_2, reduction = redu, group.by="seurat_clusters", cols=my_cols[1:5]) # + NoLegend()
+DimPlot(selected_a_2, reduction = redu, group.by="celltype",cols=my_cols[1:5]) + guides(color = guide_legend(override.aes = list(size=4), ncol=1) )# + NoLegend()
+ggsave(paste("../../graphs/R_generated/", dataset, "test_selected_a_2_celltypes.png", sep=""), width = 8, height = 5)
+```
+
+## Plot UMAP for Multiple Energies
+```{python}
+import networkx as nx
+dataset = "kidney_endo/"
+
+colors = []
+for i in range(0,15):
+  print(i)
+  ex_number = str(i)
+  QA_output_name = "sample_number" + ex_number + ".gexf"
+  QA_clusters = nx.read_gexf(''.join(["../../graphs/Python_generated/", dataset, "multi_eng/",QA_output_name]))
+  color = [y[sorted(y.keys())[-1]] for x,y in QA_clusters.nodes(data=True)]
+  colors.append(color)
+
+```
+
+```{r}
+colors <- py$colors
+graph_colors <- my_cols[1:5]
+size <- length(unlist(colors[1]))
+redu <- "umap"
+dataset <-py$dataset
+# --- PLOT QA STATES ---
+for (i in c(1:15)) {
+  print(i)
+  color <- colors[i]
+  color <- unlist(color)
+  color <- color + 1
+  
+  ord <- order(table(color), decreasing = TRUE)
+  color_new <- color
+  for (j in c(1:size)){
+    color_new[j] <- switch(color[j], which(ord==1), which(ord==2), which(ord==3), which(ord==4), which(ord==5))
+  }
+  
+  selected_a_2 <- AddMetaData(selected_a_2, metadata=color_new, col.name="QA")
+  
+  DimPlot(selected_a_2, reduction = redu, group.by="QA", cols=graph_colors) + NoLegend()
+  ggsave(paste("../../graphs/R_generated/", dataset, "multi_eng/", "selected_a_2_QA_", as.character(i), ".png", sep = ""), width = 5, height = 5)
+}
+
+# --- PLOT SEURAT ---
+color <- as.numeric(selected_a_2$seurat_clusters)
+ord <- order(table(color), decreasing = TRUE)
+color_new <- color
+for (j in c(1:size)){
+  color_new[j] <- switch(color[j], which(ord==1), which(ord==2), which(ord==3), which(ord==4), which(ord==5))
+}
+selected_a_2 <- AddMetaData(selected_a_2, metadata=color_new, col.name="seurat_clusters")
+DimPlot(selected_a_2, reduction = redu, group.by="seurat_clusters", cols=graph_colors) + NoLegend()
+ggsave(paste("../../graphs/R_generated/", dataset, "multi_eng/", "selected_a_2_seurat.png", sep=""), width = 5, height = 5)
+
+
+# --- PLOT CELL TYPES ---
+cell_types = selected_a_2$celltype
+for (i in 1:size) {
+  color_new[i] <- switch(cell_types[i], "Myofibroblast"=5, "Descending vasa recta endothelium"=4, "Ascending vasa recta endothelium"=3, "Peritubular capillary endothelium 2"=2, "Peritubular capillary endothelium 1"=1)
+}
+
+selected_a_2 <- AddMetaData(selected_a_2, metadata=color_new, col.name="celltype_new")
+DimPlot(selected_a_2, reduction = redu, group.by="celltype_new", cols=graph_colors) + NoLegend() #, raster.dpi=c()
+ggsave(paste("../../graphs/R_generated/", dataset, "multi_eng/", "selected_a_2_celltypes.png", sep=""), width = 5, height = 5)
+```
+
+## Archive
+```{r, eval=FALSE}
+library("ggplot2")     
+library("grid")                     
+library("gridExtra")        
+library("cowplot")
+
+MyLabb <- c("Peritubular capillary endothelium 1", "Myofibroblast", "Descending vasa recta endothelium", "Ascending vasa recta endothelium", "Peritubular capillary endothelium 2")
+MyLab <- c(MyLabb[1], MyLabb[5], MyLabb[2], MyLabb[3], MyLabb[4])
+  
+data <- data.frame(x = 1:5,                        # Create example data
+                   y = 1:5)
+
+graph_colors_2 <- graph_colors
+graph_colors_2[3] <- graph_colors[5]
+graph_colors_2[5] <- graph_colors[3]
+                        
+png("../../graphs/R_generated/kidney_endo/multi_eng/legend.png",width = 1500, height = 100, pointsize=30)
+ggp <- ggplot(data, aes(x, y, color = MyLab)) + labs(colour =" ") +
+  geom_point(size = 10) + scale_color_manual(labels = MyLab, values=graph_colors_2) + guides(colour = guide_legend(nrow = 2)) + theme_bw() +
+  theme(legend.text=element_text(size=rel(2)))
+ggp
+ggp_legend <- get_legend(ggp)
+grid.newpage()                                     # Draw empty plot window
+grid.draw(ggp_legend)
+dev.off()
+```
+
+```{r, eval=FALSE}
+i = 8
+print(i)
+color <- colors[i]
+color <- unlist(color)
+olor <- color + 1
+
+ord <- order(table(color), decreasing = TRUE)
+color_new <- color
+for (j in c(1:size)){
+  color_new[j] <- switch(color[j], which(ord==1), which(ord==2), which(ord==3), which(ord==4), which(ord==5))
+}
+
+selected_a_2 <- AddMetaData(selected_a_2, metadata=color_new, col.name="QA")
+
+graph_colors_2 <- graph_colors
+graph_colors_2[3] <- graph_colors[5]
+graph_colors_2[5] <- graph_colors[3]
+
+DimPlot(selected_a_2, reduction = "umap", group.by="QA", cols=graph_colors_2) + NoLegend()
+ggsave(paste("../../plots/kidney_endo/multi_eng/selected_a_2_QA_", as.character(i), ".png", sep = ""), width = 5, height = 5)
+```
+

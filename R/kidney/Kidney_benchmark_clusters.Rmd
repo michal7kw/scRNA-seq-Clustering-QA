@@ -1,0 +1,640 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Libraries
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(bspec)
+library(sctransform)
+library(cowplot)
+library(gridExtra)
+library(dplyr)
+library(patchwork)
+library(sctransform)
+library(glmGamPoi)
+library(philentropy)
+library(proxy)
+library(cluster)
+library(stats)
+```
+
+# Benchmarking
+```{r}
+benchSet <- selected_a_2
+# clusters_idexes <- as.list(unique(benchSet$QA))
+```
+
+## 2.Within Cluster Average Distance
+### 2.No-active: don't run:
+```{r, eval=FALSE}
+# ------- Average Distance QA Clusters -------
+N <- length(unique(benchSet[["QA"]][,1]))
+benchSet_cluster <- vector("list", N)
+
+for (i in clusters_idexes){
+  benchSet_cluster[[i+1]] <- mean(proxy::dist(benchSet[,which(benchSet[["QA"]] == i)]@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard", upper = TRUE, diag = TRUE, by_rows = TRUE))
+}
+```
+
+```{r, eval=FALSE}
+# ------- Average Distance Seurat Clusters -------
+N <- length(unique(benchSet[["seurat_clusters"]][,1]))
+pbmc3k_Classic_cluster <- vector("list", N)
+
+for (i in 0:(N-1)){
+ # pbmc3k_Classic_cluster[[i+1]] <- mean(proxy::dist(benchSet[,which(benchSet[["seurat_clusters"]] == i)]@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard"))
+ benchSet_cluster[[i+1]] <- mean(proxy::dist(benchSet[,which(benchSet[["seurat_clusters"]] == i)]@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard", upper = TRUE, diag = TRUE, by_rows = TRUE))
+}
+```
+
+### 2.Active
+```{r}
+dataset = "kidney_endo/"
+# ------- do kmeans clustering -------
+km.out <- kmeans(benchSet@assays$SCT@data %>% as.matrix %>% t, centers=5, nstart=3)
+benchSet <- AddMetaData(benchSet, metadata=km.out$cluster, col.name="kmeans")
+
+png(file=paste("../../graphs/R_generated/", dataset, "kmeans.png", sep=""))
+DimPlot(benchSet, reduction = "umap", group.by="kmeans") # + NoLegend()
+dev.off()
+```
+
+```{r}
+my_cols <- c('#003366','#00cc99','#cc9900','#ff0066','#6699ff','#E6C122','#000195','#B95FBB','#28CECA','#ff9a36'
+             ,'#2FF18B','#aeadb3','#CCB1F1','#D4D915','#A4DFF2','#4B4BF7')
+
+DimPlot(benchSet, reduction = "umap", group.by="kmeans", cols=my_cols[1:5]) # + NoLegend()
+ggsave(paste("../../graphs/R_generated/", dataset, "benchmark/", "kmeans.png", sep=""), width = 8, height = 5)
+DimPlot(benchSet, reduction = "umap", group.by="QA", cols=my_cols[1:5]) # + NoLegend()
+ggsave(paste("../../graphs/R_generated/", dataset, "benchmark/", "QA.png", sep=""), width = 5, height = 5)
+DimPlot(benchSet, reduction = "umap", group.by="seurat_clusters", cols=my_cols[1:5]) # + NoLegend()
+ggsave(paste("../../graphs/R_generated/", dataset, "benchmark/", "seurat.png", sep=""), width = 5, height = 5)
+```
+
+### 2.No-active: dont't run
+```{r, eval=FALSE}
+# ------- Average Distance Kmeans Clusters -------
+N <- length(unique(benchSet[["kmeans"]][,1]))
+pbmc3k_kmeans_cluster <- vector("list", N)
+
+for (i in 1:N){
+ # pbmc3k_kmeans_cluster[[i]] <- mean(distance(benchSet[,which(benchSet[["kmeans"]] == i)]@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard"))
+  benchSet_cluster[[i+1]] <- mean(proxy::dist(benchSet[,which(benchSet[["kmeans"]] == i)]@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard", upper = TRUE, diag = TRUE, by_rows = TRUE))
+}
+```
+
+```{r, eval=FALSE}
+matrix(c(sort(unlist(pbmc3k_kmeans_cluster), decreasing = FALSE), sort(unlist(benchSet_cluster), decreasing = FALSE), sort(unlist(pbmc3k_Classic_cluster), decreasing = FALSE)), ncol = 3)
+```
+
+## 3.Distances 
+### 3.No-active: don't run
+```{r, eval=FALSE}
+########### Euclidean ###################
+sc_dist <-proxy::dist(benchSet@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, upper = TRUE, diag = TRUE, by_rows = TRUE)
+```
+
+```{r, eval=FALSE}
+########### Correlation ###################
+sc_simil <- proxy::simil(benchSet@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, upper = TRUE, diag = TRUE, by_rows = TRUE)
+```
+
+```{r, eval=FALSE}
+########### Jaccard ###################
+sc_dist_jacc <- proxy::dist(benchSet@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard", upper = TRUE, diag = TRUE, by_rows = TRUE)
+```
+
+### 3.Active
+```{r}
+########### Euclidean ###################
+sc_dist_fast <- dist(benchSet@assays$SCT@data %>% as.matrix %>% t)
+```
+
+## 4.FPC library statistics
+### 4.No-active: dont't run
+```{r, eval=FALSE}
+library("fpc")
+
+name <- paste("QA_benchmark", ex_number, ".csv")
+QA_stats <- cluster.stats(sc_dist_fast, benchSet[["QA"]][,1])
+# lapply(QA_stats, function(x) write.table( data.frame(x), './QA_benchmark.csv'  , append= T, sep=',' ))
+for (i in 1:length(QA_stats)) {
+  write.table(data.frame(QA_stats[i]), paste('./fpc/QA_benchmark', ex_number, '.csv'), append= T, sep=',')
+  print(as.vector(names(QA_stats))[i])
+}
+```
+
+```{r, eval=FALSE}
+Seurat_stats <- cluster.stats(sc_dist_fast, as.numeric(benchSet[["seurat_clusters"]][,1]))
+# lapply(Seurat_stats, function(x) write.table( data.frame(x), './Seurat_benchmark.csv'  , append= T, sep=',' ))
+for (i in 1:length(Seurat_stats)) {
+  write.table(data.frame(Seurat_stats[i]), paste('./fpc/Seurat_benchmark', ex_number, '.csv'), append= T, sep=',')
+  print(as.vector(names(Seurat_stats))[i])
+}
+```
+
+```{r, eval=FALSE}
+Kmeans_stats <- cluster.stats(sc_dist_fast, benchSet[["kmeans"]][,1])
+#as.vector(names(Kmeans_stats))
+#lapply(Kmeans_stats, function(x) write.table( data.frame(x), './Kmeans_benchmark.csv', append= T, sep=',',col.names = NA, row.names =TRUE))
+
+for (i in 1:length(Kmeans_stats)) {
+  write.table(data.frame(Kmeans_stats[i]), paste('./fpc/Kmeans_benchmark', ex_number, '.csv'), append= T, sep=',')
+  print(as.vector(names(Kmeans_stats))[i])
+}
+```
+
+## 5.Silhouette
+### 5.No-active: don't run
+```{r, eval=FALSE}
+d_silhouette_results_kmeans <- silhouette(benchSet[["kmeans"]][,1], sc_dist)
+d_silhouette_sum_kmeans <- sum(d_silhouette_results_kmeans[,"sil_width"])
+summary(d_silhouette_results_kmeans)
+
+cat("\n")
+
+d_silhouette_results_QA <- silhouette(benchSet[["QA"]][,1], sc_dist)
+d_silhouette_sum_QA <- sum(d_silhouette_results_QA[,"sil_width"])
+summary(d_silhouette_sum_QA)
+
+cat("\n")
+
+d_silhouette_results_seurat <- silhouette(as.numeric(as.vector(benchSet[["seurat_clusters"]][,1])), sc_dist)
+d_silhouette_sum_seurat <- sum(d_silhouette_results_seurat[,"sil_width"])
+summary(d_silhouette_results_seurat)
+
+cat("\n")
+
+c(d_silhouette_sum_kmeans, d_silhouette_sum_QA, d_silhouette_sum_seurat)
+```
+
+```{r, eval=FALSE}
+s_silhouette_results_kmeans <- silhouette(benchSet[["kmeans"]][,1], sc_simil)
+s_silhouette_sum_kmeans <- sum(s_silhouette_results_kmeans[,"sil_width"])
+summary(s_silhouette_results_kmeans)
+
+cat("\n")
+
+s_silhouette_results_QA <- silhouette(benchSet[["QA"]][,1], sc_simil)
+s_silhouette_sum_QA <- sum(s_silhouette_results_QA[,"sil_width"])
+summary(s_silhouette_sum_QA)
+
+cat("\n")
+
+s_silhouette_results_seurat <- silhouette(as.numeric(as.vector(benchSet[["seurat_clusters"]][,1])), sc_simil)
+s_silhouette_sum_seurat <- sum(s_silhouette_results_seurat[,"sil_width"])
+summary(s_silhouette_results_seurat)
+
+cat("\n")
+
+c(s_silhouette_sum_kmeans, s_silhouette_sum_QA, s_silhouette_sum_seurat)
+```
+
+```{r, eval=FALSE}
+df_silhouette_results_kmeans <- silhouette(benchSet[["kmeans"]][,1], sc_dist_fast)
+df_silhouette_sum_kmeans <- sum(df_silhouette_results_kmeans[,"sil_width"])
+summary(df_silhouette_results_kmeans)
+
+cat("\n")
+
+df_silhouette_results_QA <- silhouette(benchSet[["QA"]][,1], sc_dist_fast)
+df_silhouette_sum_QA <- sum(df_silhouette_results_QA[,"sil_width"])
+summary(df_silhouette_results_QA)
+
+cat("\n")
+
+df_silhouette_results_seurat <- silhouette(as.numeric(as.vector(benchSet[["seurat_clusters"]][,1])), sc_dist_fast)
+df_silhouette_sum_seurat <- sum(df_silhouette_results_seurat[,"sil_width"])
+summary(df_silhouette_results_seurat)
+
+cat("\n")
+
+c(df_silhouette_sum_kmeans, df_silhouette_sum_QA, df_silhouette_sum_seurat)
+```
+
+```{r, eval=FALSE}
+kmeans_m <- benchSet[["kmeans"]][,1]
+qa_m <- benchSet[["QA"]][,1]
+seu_m <- as.numeric(as.vector(benchSet[["seurat_clusters"]][,1]))
+
+benchSet[["celltype"]][,1]
+```
+
+```{python, eval=FALSE}
+kmean_mp = r.kmeans_m
+qa_mp = r.qa_m
+seu_m = r.seu_m
+
+```
+
+```{r, eval=FALSE}
+silhouette_results_kmeans <- silhouette(benchSet[["kmeans"]][,1], proxy::simil(benchSet@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, upper = TRUE, diag = TRUE, by_rows = TRUE))
+silhouette_sum_kmeans <- sum(silhouette_results_kmeans[,"sil_width"])
+summary(silhouette_results_kmeans)
+```
+
+## 6.Rand index
+### 6.Active Single
+```{r}
+library(fossil)
+
+cell_type <- benchSet[["celltype"]][,1]
+cell_kmeans <- benchSet[["kmeans"]][,1]
+cell_qa <- benchSet[["QA"]][,1] #  +1
+cell_seurat <- as.numeric(as.vector(benchSet[["seurat_clusters"]][,1])) #  +1
+
+sort(table(cell_type))
+sort(table(cell_kmeans))
+sort(table(cell_qa))
+sort(table(cell_seurat))
+kmeans_order <- as.numeric(order(table(cell_kmeans)))
+qa_order <- as.numeric(order(table(cell_qa)))
+seurat_order <- as.numeric(order(table(cell_seurat)))
+```
+
+```{r}
+cell_type <- benchSet[["celltype"]][,1]
+size <- length(cell_type)
+tcell_type <- vector(mode="character", length=size)
+
+for (i in 1:size) {
+  tcell_type[i] <- switch(cell_type[i], "Myofibroblast"=1, "Descending vasa recta endothelium"=2, "Ascending vasa recta endothelium"=3, "Peritubular capillary endothelium 2"=4, "Peritubular capillary endothelium 1"=5)
+}
+tcell_type <- as.numeric(tcell_type)
+sort(table(tcell_type))
+```
+
+```{r}
+size <- length(cell_type)
+tcell_kmeans <- vector(mode="numeric", length=size)
+tcell_qa <- vector(mode="numeric", length=size)
+tcell_seurat <- vector(mode="numeric", length=size)
+
+for (i in 1:size) {
+  tcell_kmeans[i] <- switch(cell_kmeans[i], kmeans_order[1], kmeans_order[2], kmeans_order[3], kmeans_order[4], kmeans_order[5])
+  tcell_qa[i]     <- switch(cell_qa[i], qa_order[1], qa_order[2], qa_order[3], qa_order[4], qa_order[5])
+  tcell_seurat[i] <- switch(cell_seurat[i], seurat_order[1], seurat_order[2], seurat_order[3], seurat_order[4], seurat_order[5])
+}
+```
+
+```{r}
+rand.index(tcell_type, tcell_type)
+adj.rand.index(tcell_type, tcell_type)
+
+rand.index(tcell_kmeans, tcell_type)
+adj.rand.index(tcell_kmeans, tcell_type)
+
+rand.index(tcell_qa, tcell_type)
+adj.rand.index(tcell_qa, tcell_type)
+
+rand.index(tcell_seurat, tcell_type)
+adj.rand.index(tcell_seurat, tcell_type)
+```
+
+### 6.Active Multi
+```{python}
+colors = []
+dataset = "kidney_endo/"
+for i in range(0,15):
+  print(i)
+  ex_number = str(i)
+  QA_output_name = "sample_number" + ex_number + ".gexf"
+  QA_clusters = nx.read_gexf(''.join(["../../graphs/Python_generated/", dataset, "multi_eng/",QA_output_name]))
+  color = [y[sorted(y.keys())[-1]] for x,y in QA_clusters.nodes(data=True)]
+  colors.append(color)
+```
+
+```{r}
+colors <- py$colors
+
+ref_rand <- c()
+ref_adj_rand <- c()
+km_rand <- c()
+km_adj_rand <- c()
+qa_rand <- c()
+qa_adj_rand <- c()
+seu_rand <- c()
+seu_adj_rand <- c()
+
+# kmean_data <- benchSet@assays$SCT@data %>% as.matrix %>% t
+
+for (i in c(1:15)) {
+  print(i)
+  color <- colors[i]
+  color <- unlist(color)
+  benchSet <- AddMetaData(benchSet, metadata=color, col.name="QA")
+  # km.out <- kmeans(kmean_data, centers=5, nstart=1)
+  # benchSet <- AddMetaData(benchSet, metadata=km.out$cluster, col.name="kmeans")
+  
+  # cell_kmeans <- benchSet[["kmeans"]][,1]
+  cell_qa <- benchSet[["QA"]][,1] + 1
+  
+  # kmeans_order <- as.numeric(order(table(cell_kmeans)))
+  qa_order <- as.numeric(order(table(cell_qa)))
+  
+  size <- length(cell_type)
+  # tcell_kmeans <- vector(mode="numeric", length=size)
+  tcell_qa <- vector(mode="numeric", length=size)
+  # tcell_seurat <- vector(mode="numeric", length=size)
+  
+  for (i in 1:size) {
+    # tcell_kmeans[i] <- switch(cell_kmeans[i], kmeans_order[1], kmeans_order[2], kmeans_order[3], kmeans_order[4], kmeans_order[5])
+    tcell_qa[i]     <- switch(cell_qa[i], qa_order[1], qa_order[2], qa_order[3], qa_order[4], qa_order[5])
+    # tcell_seurat[i] <- switch(cell_seurat[i], seurat_order[1], seurat_order[2], seurat_order[3], seurat_order[4], seurat_order[5])
+  }
+  
+  ref_rand <- c(ref_rand, rand.index(tcell_type, tcell_type))
+  ref_adj_rand <- c(ref_adj_rand, adj.rand.index(tcell_type, tcell_type))
+  
+  # km_rand <- c(km_rand, rand.index(tcell_kmeans, tcell_type))
+  # km_adj_rand <- c(km_adj_rand, adj.rand.index(tcell_kmeans, tcell_type))
+  
+  qa_rand <- c(qa_rand, rand.index(tcell_qa, tcell_type))
+  qa_adj_rand <- c(qa_adj_rand, adj.rand.index(tcell_qa, tcell_type))
+  
+  # seu_rand <- c(seu_rand, rand.index(tcell_seurat, tcell_type))
+  # seu_adj_rand <- c(seu_adj_rand, adj.rand.index(tcell_seurat, tcell_type))
+  
+}
+
+# clipr::write_clip(ref_rand)
+# clipr::write_clip(km_rand)
+# clipr::write_clip(qa_rand)
+# clipr::write_clip(seu_rand)
+# 
+# clipr::write_clip(ref_adj_rand)
+# clipr::write_clip(km_adj_rand)
+# clipr::write_clip(qa_adj_rand)
+# clipr::write_clip(seu_adj_rand)
+
+max_index_qa <- max(qa_rand)
+# clipr::write_clip(max_index_qa)
+which(qa_rand == max_index_qa)
+```
+
+
+```{r}
+km_rand <- c()
+kmean_data <- benchSet@assays$SCT@data %>% as.matrix %>% t
+fig_size <- 5
+
+for (i in c(1:15)) {
+  print(i)
+  km.out <- kmeans(kmean_data, centers=5, nstart=1)
+  benchSet <- AddMetaData(benchSet, metadata=km.out$cluster, col.name="kmeans")
+  
+  cell_kmeans <- benchSet[["kmeans"]][,1]
+  kmeans_order <- as.numeric(order(table(cell_kmeans)))
+  
+  size <- length(cell_type)
+  tcell_kmeans <- vector(mode="numeric", length=size)
+
+  for (j in 1:size) {
+    tcell_kmeans[j] <- switch(cell_kmeans[j], kmeans_order[1], kmeans_order[2], kmeans_order[3], kmeans_order[4], kmeans_order[5])
+  }
+  
+  ref_rand <- c(ref_rand, rand.index(tcell_type, tcell_type))
+  km_rand <- c(km_rand, rand.index(tcell_kmeans, tcell_type))
+  
+  color <- as.numeric(benchSet$kmeans)
+  ord <- order(table(color), decreasing = TRUE)
+  color_new <- color
+  
+  for (k in c(1:size)){
+    color_new[k] <- switch(color[k], which(ord==1), which(ord==2), which(ord==3), which(ord==4), which(ord==5))
+  }
+  
+  benchSet <- AddMetaData(benchSet, metadata=color_new, col.name="kmeans")
+  DimPlot(benchSet, reduction = "umap", group.by="kmeans", cols=graph_colors) # + NoLegend()
+  ggsave(paste("../../graphs/R_generated/", dataset, "multi_eng/", "selected_a_2_kmeans_", as.character(i), ".png", sep = ""), width = fig_size, height = fig_size)
+}
+
+# clipr::write_clip(ref_rand)
+# clipr::write_clip(km_rand)
+
+max_index_qa <- max(qa_rand)
+which(qa_rand == max_index_qa)
+```
+
+
+```{r, eval=FALSE}
+kmeans_data <- benchSet@assays$SCT@data %>% as.matrix %>% t
+size <- length(cell_type)
+
+km_index_count <- c()
+
+for (i in 1:15) {
+  km_index <- 0
+  km_index_list <- c()
+  iter <- 0
+
+  print(i)
+  
+  while (km_index < max_index_qa) {
+    iter <- iter + 1
+    print(iter)
+    
+    km.out <- kmeans(kmeans_data, centers=5, nstart=1)
+    benchSet <- AddMetaData(benchSet, metadata=km.out$cluster, col.name="kmeans")
+    
+    cell_kmeans <- benchSet[["kmeans"]][,1]
+    kmeans_order <- as.numeric(order(table(cell_kmeans)))
+    tcell_kmeans <- vector(mode="numeric", length=size)
+    
+    for (i in 1:size) {
+      tcell_kmeans[i] <- switch(cell_kmeans[i], kmeans_order[1], kmeans_order[2], kmeans_order[3], kmeans_order[4], kmeans_order[5])
+    }
+    
+    km_index <- rand.index(tcell_kmeans, tcell_type)
+    km_index_list <- c(km_index_list, km_index)
+
+  }
+  write.csv(km_index_list,file=paste('./kmean_index_stats/', as.character(i),'.csv'),row.names=F)
+  km_index_count <- c(km_index_count, iter)
+}
+
+# clipr::write_clip(km_index_count)
+```
+
+## 7.Multisamples Silhouette
+### 7.Active
+```{python}
+colors = []
+for i in range(0,15):
+  print(i)
+  ex_number = str(i)
+  QA_output_name = "sample_number" + ex_number + ".gexf"
+  QA_clusters = nx.read_gexf(''.join(["../../graphs/Python_generated/", dataset, "multi_eng/",QA_output_name]))
+  color = [y[sorted(y.keys())[-1]] for x,y in QA_clusters.nodes(data=True)]
+  colors.append(color)
+```
+
+```{r}
+# sc_dist_fast <- Dist(benchSet@assays$SCT@data %>% as.matrix %>% t)
+# kmeans_data <- benchSet@assays$SCT@data %>% as.matrix %>% t
+
+colors <- py$colors
+# res_km <- c()
+res_qa <- c()
+# res_se <- c()
+
+for (i in 1:15) {
+  print(i)
+  color <- colors[i]
+  color <- unlist(color)
+  benchSet <- AddMetaData(benchSet, metadata=color, col.name="QA")
+  #km.out <- kmeans(benchSet@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, centers=5, nstart=1)
+  # km.out <- kmeans(kmeans_data, centers=5, nstart=1)
+  # benchSet <- AddMetaData(benchSet, metadata=km.out$cluster, col.name="kmeans")
+  # df_silhouette_results_kmeans <- silhouette(benchSet[["kmeans"]][,1], sc_dist_fast)
+  df_silhouette_results_QA <- silhouette(benchSet[["QA"]][,1], sc_dist_fast)
+  # df_silhouette_results_seurat <- silhouette(as.numeric(as.vector(benchSet[["seurat_clusters"]][,1])), sc_dist_fast)
+  # res_km <- c(res_km, mean(df_silhouette_results_kmeans[,3]))
+  res_qa <- c(res_qa, mean(df_silhouette_results_QA[,3]))
+  # res_se <- c(res_se, mean(df_silhouette_results_seurat[,3]))
+}
+
+# clipr::write_clip(res_km)
+# clipr::write_clip(res_qa)
+max_res_qa = max(res_qa)
+# clipr::write_clip(max_res_qa)
+```
+
+```{r, eval=FALSE}
+# sc_dist_fast <- Dist(benchSet@assays$SCT@data %>% as.matrix %>% t)
+kmeans_data <- benchSet@assays$SCT@data %>% as.matrix %>% t
+
+# colors <- py$colors
+res_km <- c()
+# res_qa <- c()
+# res_se <- c()
+
+for (i in 1:15) {
+  print(i)
+  # color <- colors[i]
+  # color <- unlist(color)
+  # benchSet <- AddMetaData(benchSet, metadata=color, col.name="QA")
+  # km.out <- kmeans(benchSet@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, centers=5, nstart=1)
+  km.out <- kmeans(kmeans_data, centers=5, nstart=1)
+  benchSet <- AddMetaData(benchSet, metadata=km.out$cluster, col.name="kmeans")
+  df_silhouette_results_kmeans <- silhouette(benchSet[["kmeans"]][,1], sc_dist_fast)
+  # df_silhouette_results_QA <- silhouette(benchSet[["QA"]][,1], sc_dist_fast)
+  # df_silhouette_results_seurat <- silhouette(as.numeric(as.vector(benchSet[["seurat_clusters"]][,1])), sc_dist_fast)
+  res_km <- c(res_km, mean(df_silhouette_results_kmeans[,3]))
+  # res_qa <- c(res_qa, mean(df_silhouette_results_QA[,3]))
+  # res_se <- c(res_se, mean(df_silhouette_results_seurat[,3]))
+}
+
+# clipr::write_clip(res_km)
+# clipr::write_clip(res_qa)
+# clipr::write_clip(res_se)
+```
+
+```{r, eval=FALSE}
+# sc_dist_fast <- Dist(benchSet@assays$SCT@data %>% as.matrix %>% t)
+# kmeans_data <- benchSet@assays$SCT@data %>% as.matrix %>% t
+
+# colors <- py$colors
+# res_km <- c()
+# res_qa <- c()
+res_se <- c()
+
+for (i in 1:15) {
+  print(i)
+  # color <- colors[i]
+  # color <- unlist(color)
+  # benchSet <- AddMetaData(benchSet, metadata=color, col.name="QA")
+  #km.out <- kmeans(benchSet@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, centers=5, nstart=1)
+  # km.out <- kmeans(kmeans_data, centers=5, nstart=1)
+  # benchSet <- AddMetaData(benchSet, metadata=km.out$cluster, col.name="kmeans")
+  # df_silhouette_results_kmeans <- silhouette(benchSet[["kmeans"]][,1], sc_dist_fast)
+  # df_silhouette_results_QA <- silhouette(benchSet[["QA"]][,1], sc_dist_fast)
+  df_silhouette_results_seurat <- silhouette(as.numeric(as.vector(benchSet[["seurat_clusters"]][,1])), sc_dist_fast)
+  # res_km <- c(res_km, mean(df_silhouette_results_kmeans[,3]))
+  # res_qa <- c(res_qa, mean(df_silhouette_results_QA[,3]))
+  res_se <- c(res_se, mean(df_silhouette_results_seurat[,3]))
+}
+
+# clipr::write_clip(res_km)
+# clipr::write_clip(res_qa)
+# clipr::write_clip(res_se)
+```
+
+### 7.No-active: dont't run
+```{r, eval=FALSE}
+
+colors = py$colors
+colors = unlist(colors)
+selected_a_2<- AddMetaData(selected_a_2, metadata=colors, col.name="QA")
+  
+benchSet <- selected_a_2
+sc_dist_fast <- Dist(benchSet@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame)
+
+for (i in 1:3) {
+  km.out <- kmeans(benchSet@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, centers=5, nstart=3)
+  benchSet <- AddMetaData(benchSet, metadata=km.out$cluster, col.name="kmeans")
+  
+  # write.table(data.frame(QA_stats[i]), paste('./fpc/QA_benchmark', ex_number, '.csv'), append= T, sep=',')
+  # print(as.vector(names(QA_stats))[i])
+  
+  df_silhouette_results_kmeans <- silhouette(benchSet[["kmeans"]][,1], sc_dist_fast)
+  df_silhouette_sum_kmeans <- sum(df_silhouette_results_kmeans[,"sil_width"])
+  summary(df_silhouette_results_kmeans)
+  
+  cat("\n")
+  
+  df_silhouette_results_QA <- silhouette(benchSet[["QA"]][,1], sc_dist_fast)
+  df_silhouette_sum_QA <- sum(df_silhouette_results_QA[,"sil_width"])
+  summary(df_silhouette_results_QA)
+  
+  cat("\n")
+  
+  df_silhouette_results_seurat <- silhouette(as.numeric(as.vector(benchSet[["seurat_clusters"]][,1])), sc_dist_fast)
+  df_silhouette_sum_seurat <- sum(df_silhouette_results_seurat[,"sil_width"])
+  summary(df_silhouette_results_seurat)
+  
+  cat("\n")
+  
+  c(df_silhouette_sum_kmeans, df_silhouette_sum_QA, df_silhouette_sum_seurat)
+}
+```
+
+## 8.Kmeans in loop to reach QA Seurat accuracy 
+```{r, eval=FALSE}
+################### Silhouette & rand index ###################
+res_km <- c()
+res_mkm <- c()
+iter <- 0
+meankmean <- 0
+kmeans_data <- benchSet@assays$SCT@data %>% as.matrix %>% t
+
+for (i in 1:2) {
+  meankmean <- 0
+  iter <- 0
+  res_km <- 0
+  print(i)
+  while (meankmean < max_res_qa) {
+    iter <- iter + 1
+    print(iter)
+    km.out <- kmeans(kmeans_data, centers=5, nstart=1)
+    benchSet <- AddMetaData(benchSet, metadata=km.out$cluster, col.name="kmeans")
+    df_silhouette_results_kmeans <- silhouette(benchSet[["kmeans"]][,1], sc_dist_fast)
+    meankmean <- mean(df_silhouette_results_kmeans[,3])
+    res_km <- c(res_km, meankmean)
+  }
+  # write.csv(res_km,file=paste('./kmean_stats/', as.character(i),'.csv'),row.names=F)
+  res_mkm <- c(res_mkm, iter)
+}
+
+# clipr::write_clip(res_km)
+# clipr::write_clip(res_mkm)
+# print(iter)
+```
+
+```{r, eval=FALSE}
+hist(res_km, breaks=iter)
+```

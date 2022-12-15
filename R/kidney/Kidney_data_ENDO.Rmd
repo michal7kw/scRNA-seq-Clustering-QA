@@ -1,0 +1,324 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Selected subset A
+selected_a - includes cells [Myofibroblast, vasa recta endothelium, Peritubular capillary endothelium]; trimmed to 1000 cells; with the original embedding
+selected_a_2 - the same as selected_a, but with the new embedding
+## Select and Transform Data
+```{r}
+unique(kidney$celltype)
+length(unique(kidney$celltype))
+```
+
+```{r}
+to_select <- c("Myofibroblast", "Descending vasa recta endothelium", "Peritubular capillary endothelium 2", "Peritubular capillary endothelium 1", "Ascending vasa recta endothelium")
+selected_meta <- is.element(kidney$celltype, to_select)
+kidney <- AddMetaData(kidney, metadata=selected_meta, col.name="selected_ENDO")
+selected_a <- subset(x = kidney, subset = selected_ENDO == TRUE)
+ncol(selected_a)
+selected_a <- selected_a[,colnames(selected_a)[1:1000]]
+ncol(selected_a)
+```
+
+```{r}
+selected_a_2 <- SCTransform(selected_a, vars.to.regress = "percent.mt", method = "glmGamPoi", verbose = FALSE)
+selected_a_2 <- RunPCA(selected_a_2, features = VariableFeatures(object = selected_a_2))
+```
+
+```{r}
+selected_a_2 <- RunUMAP(selected_a_2, dims = 1:30, verbose = FALSE)
+selected_a_2 <- FindNeighbors(selected_a_2, dims = 1:30, verbose = FALSE)
+selected_a_2 <- FindClusters(selected_a_2, resolution = 0.1, verbose = FALSE)
+selected_a_2 <- RunTSNE(selected_a_2)
+```
+
+```{r}
+DimPlot(selected_a, label = TRUE, label.size = 3, group.by="seurat_clusters") + NoLegend()
+DimPlot(selected_a, group.by="celltype",repel = TRUE, label = TRUE, label.size = 3) #+ NoLegend()
+```
+
+```{r}
+my_cols <- c('#003366','#00cc99','#cc9900','#ff0066','#6699ff','#E6C122','#000195','#B95FBB','#28CECA','#ff9a36','#2FF18B','#aeadb3','#CCB1F1','#D4D915','#A4DFF2','#4B4BF7')
+DimPlot(selected_a_2, label = TRUE, label.size = 3, group.by="seurat_clusters") + NoLegend()
+DimPlot(selected_a_2, reduction = "umap", group.by="celltype",repel = TRUE, label = FALSE, label.size = 3, cols=my_cols[1:5]) #+ NoLegend()
+```
+
+## Generate SNN graph
+```{r}
+n = ncol(selected_a_2)
+dim(selected_a_2)
+
+type = c("_", "_trimmed_", "_negedges_", "_trimmed_negedges_")
+id_type = 2
+dim = 20 #30
+k = 8
+coff = 0.1 #0.067 
+ord = 8
+
+selected_a_2 <- FindNeighbors(selected_a_2, reduction = "pca", dims = 1:dim, k.param=k, compute.SNN=TRUE, prune.SNN=coff)
+
+selected_a_2_snn_temp <- selected_a_2@graphs[["SCT_snn"]]
+
+dim(selected_a_2_snn_temp)
+selected_a_2_snn <- selected_a_2_snn_temp - diag(nrow=n, ncol=n)
+
+library(proxyC)
+ 
+# ------- limitation of nodes degrees SYMMETRICS-------
+print(sum(colZeros(selected_a_2_snn)))
+for (i in 1:n){
+  to_delete <- order(selected_a_2_snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+  selected_a_2_snn[,i][to_delete] <- integer(n-ord)
+  selected_a_2_snn[i,][to_delete] <- integer(n-ord)
+}
+print(sum(colZeros(selected_a_2_snn)))
+```
+
+```{python}
+id_type, type = int(r.id_type)-1, r.type
+n = int(r.n)
+k = int(r.k)
+ord = int(r.ord)
+dim = int(r.dim)
+
+G = nx.from_numpy_matrix(r.selected_a_2_snn)
+G.number_of_nodes()
+
+file_name = ''.join(["../../graphs/R_generated/kidney_endo/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), "_TEST.gexf"])
+nx.write_gexf(G, file_name)
+
+G = nx.read_gexf(file_name)
+pos = nx.spring_layout(G)
+plt.cla()
+nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+file_name = ''.join(["../../graphs/R_generated/kidney_endo/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), "_TEST.png"])
+plt.savefig(file_name, bbox_inches='tight')
+```
+
+## Optional stage for removing disconnected subsets and SNN graph re-evaluation; graph tuning by shared edges enhancement
+```{python}
+import numpy as np
+import networkx as nx
+from matplotlib import pyplot as plt
+
+def disconnected_components(G):
+    lengths  = [len(c) for c in sorted(nx.connected_components(G), key=len, reverse=True)]
+    print(lengths)
+    S = [G.subgraph(c).copy() for c in nx.connected_components(G)]
+    for s in S:
+        print(len(s.nodes()))
+        if len(s.nodes()) > 15:
+            subindex = 0
+            for n in s.nodes():
+                G.nodes(data=True)[n]["subindex"] = subindex
+                G.nodes(data=True)[n]["valid"] = 1
+                subindex = subindex + 1            
+        else:
+            for n in s.nodes():
+                G.nodes(data=True)[n]["valid"] = 0
+    return G, S, lengths
+
+  
+G = nx.from_numpy_matrix(r.selected_a_2_snn)
+
+G, S, lengths = disconnected_components(G)
+print(lengths)
+G = S[0]
+G.number_of_nodes()
+
+to_remove=[list(graph.nodes) for graph in S[1:]]
+to_remove_flat=[item for sublist in to_remove for item in sublist]
+print("to be removed: ", end="")
+print(to_remove_flat)
+G.remove_nodes_from(to_remove_flat)
+
+list(nx.isolates(G))
+```
+
+```{r, eval=FALSE}
+selected_a_2_backup <- selected_a_2
+selected_a_2 <- selected_a_2_backup
+```
+
+```{r, eval=False}
+toRemove <- py$to_remove_flat
+print(length(colnames(selected_a_2)))
+      
+toRemove_col_name <- colnames(selected_a_2)[as.vector(toRemove)]
+
+selected_a_2_filtered <- selected_a_2[,!colnames(selected_a_2) %in% toRemove_col_name]
+
+length(colnames(selected_a_2_filtered)) 
+
+selected_a_2 <- selected_a_2_filtered
+
+n = ncol(selected_a_2)
+dim(selected_a_2)
+
+coff = 0.0001
+
+selected_a_2 <- FindNeighbors(selected_a_2, dims = 1:dim, k.param=k, compute.SNN=TRUE, prune.SNN=coff)
+
+selected_a_2_snn_temp <- selected_a_2@graphs[["SCT_snn"]]
+
+dim(selected_a_2_snn_temp)
+selected_a_2_snn <- selected_a_2_snn_temp - diag(nrow=n, ncol=n)
+```
+
+```{r, eval=FALSE}
+isSymmetric(as.matrix(selected_a_2_snn))
+
+# ------- Enhance shared edges (may want to repeat multiple times) -------
+library(Matrix)
+
+# Method 2 (better)
+mutual = matrix(0,n,n)
+
+for (i in 1:n){
+    mutual[i,] <- selected_a_2_snn[i,] & selected_a_2_snn[,i] 
+}
+nnzero(mutual)
+
+selected_a_2_snn_old <- selected_a_2_snn
+for (i in 1:n){
+    selected_a_2_snn[i,] <- selected_a_2_snn_old[i,]+mutual[,i]
+}
+```
+
+## Plot and save graphs 
+
+```{python}
+import numpy as np
+import networkx as nx
+from matplotlib import pyplot as plt
+
+id_type, type = int(r.id_type)-1, r.type
+n = int(r.n)
+k = int(r.k)
+ord = int(r.ord)
+dim = int(r.dim)
+
+file_name = ''.join(["../../graphs/R_generated/kidney_endo/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), ".gexf"])
+
+G = nx.from_numpy_matrix(r.selected_a_2_snn)
+nodes = G.nodes
+print("CQM nomber of nodes: ", G.number_of_nodes())
+edges = G.edges
+print("CQM nomber of edges: ", G.number_of_edges())
+nx.write_gexf(G, file_name)
+
+G = nx.read_gexf(file_name)
+pos = nx.spring_layout(G)
+plt.cla()
+nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+file_name = ''.join(["../../graphs/R_generated/kidney_endo/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), ".png"])
+plt.savefig(file_name, bbox_inches='tight')
+```
+
+```{r}
+knitr::include_graphics(py$file_name)
+```
+
+## Functions
+```{r, eval=False}
+datatransformation <- function(fdata) {
+  fdata2 <- SCTransform(fdata, vars.to.regress = "percent.mt", method = "glmGamPoi", verbose = FALSE)
+  fdata2 <- RunPCA(fdata2, features = VariableFeatures(object = fdata))
+  fdata2 <- RunUMAP(fdata2, dims = 1:30, verbose = FALSE)
+  fdata2 <- FindNeighbors(fdata2, dims = 1:30, verbose = FALSE)
+  fdata2 <- FindClusters(fdata2, resolution = 0.1, verbose = FALSE)
+  return(fdata2)
+}
+```
+
+```{r, eval=False}
+generatesnn <- function(fdata) {
+  n = ncol(fdata)
+  dim(fdata)
+  
+  type = c("_", "_trimmed_", "_negedges_", "_trimmed_negedges_")
+  id_type = 2
+  dim = 30
+  k = 10
+  coff = 0.067 #1/15
+  ord = 15
+  
+  fdata <- FindNeighbors(fdata, reduction = "pca", dims = 1:dim, k.param=k, compute.SNN=TRUE, prune.SNN=coff)
+  
+  fdata_snn_temp <- fdata@graphs[["SCT_snn"]]
+  
+  dim(fdata_snn_temp)
+  fdata_snn <- fdata_snn_temp - diag(nrow=n, ncol=n)
+  return(fdata_snn)
+}
+```
+
+```{r, eval=FALSE}
+# ------- limitation of nodes degrees SYMMETRICS-------
+limitnodes <- function(fdata) {
+  print(sum(colZeros(fdata)))
+  for (i in 1:n){
+    to_delete <- order(fdata[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+    fdata[,i][to_delete] <- integer(n-ord)
+    fdata[i,][to_delete] <- integer(n-ord)
+  }
+  print(sum(colZeros(fdata)))
+}
+```
+
+```{r, eval=FALSE}
+# ------- limitation of nodes degrees UNSYMMETRIC -------
+print(sum(colZeros(selected_a_2_snn)))
+for (i in 1:n){
+  to_delete <- order(selected_a_2_snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+  selected_a_2_snn[,i][to_delete] <- integer(n-ord)
+}
+print(sum(colZeros(selected_a_2_snn)))
+```
+
+```{r, eval=FALSE}
+# ------- Enhance shared edges (may want to repeat multiple times) -------
+library(Matrix)
+
+# Method 1
+selected_a_2_snn_old <- selected_a_2_snn
+for (i in 1:n){
+    selected_a_2_snn[i,] <- selected_a_2_snn_old[i,]+selected_a_2_snn_old[,i]
+}
+```
+
+```{python, eval=False}
+import numpy as np
+import networkx as nx
+from matplotlib import pyplot as plt
+
+plotsavegraphs <- function(name, fdata) {
+
+  id_type, type = int(r.id_type)-1, r.type
+  n = int(r.n)
+  k = int(r.k)
+  ord = int(r.ord)
+  dim = int(r.dim)
+
+  file_name = ''.join(["../../graphs/R_generated/kidney_endo/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), "_bench.gexf"])
+
+  G = nx.from_numpy_matrix(r.selected_a_2_snn)
+  nx.write_gexf(G, file_name)
+
+  G = nx.read_gexf(file_name)
+  pos = nx.spring_layout(G)
+  plt.cla()
+  nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+  nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+  file_name = ''.join(["../../graphs/R_generated/kidney_endo/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), "_bench.png"])
+  plt.savefig(file_name, bbox_inches='tight')
+}
+```
+
