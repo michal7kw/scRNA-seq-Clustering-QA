@@ -23,8 +23,6 @@ Python_Functions/__pycache__
 *.pyc
 
 /get-pip.py
-/main.py
-/plots.ipynb
 
 .vscode/
 .Rhistory
