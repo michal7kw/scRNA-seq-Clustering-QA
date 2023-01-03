@@ -4,6 +4,7 @@ R_plots/
 
 *.gexf
 *.png
+!logo.png
 
 R/motor
 R/pbmc3k/html
