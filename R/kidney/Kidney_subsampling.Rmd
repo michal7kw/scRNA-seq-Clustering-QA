@@ -1,0 +1,292 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+Processes Kidney dataset
+Selects and processes: selected_b(old embedding), selected_b_2(new embedding), selected_b_2_pruned 
+# Libraries
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(bspec)
+library(sctransform)
+library(cowplot)
+library(gridExtra)
+library(dplyr)
+library(patchwork)
+library(sctransform)
+library(glmGamPoi)
+library(SeuratDisk)
+library("parallel")
+```
+# Whole Dataset
+kidney - whole dataset, 10605 samples
+## Clean Data
+```{r}
+# ------- use previously created Seurat object -------
+kidney <- readRDS(file = "../../data/kidney_demo_stewart.rds")
+```
+
+```{r}
+kidney[["percent.mt"]] <- PercentageFeatureSet(kidney, pattern = "^MT-")
+
+kidney <- subset(kidney, subset = nFeature_RNA > 203 & nFeature_RNA < 7000 & nCount_RNA > 254 & nCount_RNA < 40000 & percent.mt < 20) 
+```
+
+## Transform Data
+```{r}
+kidney <- SCTransform(kidney, vars.to.regress = "percent.mt", method = "glmGamPoi", verbose = FALSE)
+kidney <- RunPCA(kidney, features = VariableFeatures(object = kidney))
+```
+
+```{r}
+kidney <- RunUMAP(kidney, reduction = "pca", dims = 1:10)
+DimPlot(kidney, reduction = "umap", group.by="celltype",repel = TRUE, label = TRUE, label.size = 3) + NoLegend()
+```
+
+# Select Data for subsampling
+selected_b -- with old (whole dataset) embedding, selected cells: NK, NKT, CD4, CD8 and Mast cells  
+selected_b_2-- with new (selected dataset) embedding
+selected_b_2_pruned -- QA pruning results
+
+## Transform Data
+```{r}
+to_select <- c("NK cell", "NKT cell", "CD8 T cell", "CD4 T cell", "Mast cell")
+selected_meta <- is.element(kidney$celltype, to_select)
+kidney <- AddMetaData(kidney, metadata=selected_meta, col.name="selected")
+selected_b <- subset(x = kidney, subset = selected == TRUE)
+ncol(selected_b)
+DimPlot(selected_b, group.by="celltype",repel = TRUE, label = TRUE, label.size = 3) #+ NoLegend()
+```
+
+```{r}
+selected_b_2 <- SCTransform(selected_b, vars.to.regress = "percent.mt", method = "glmGamPoi", verbose = FALSE)
+selected_b_2 <- RunPCA(selected_b_2, features = VariableFeatures(object = selected_b_2))
+```
+
+```{r}
+n = ncol(selected_b_2)
+dim(selected_b_2)
+
+type = c("_", "_trimmed_", "_negedges_", "_trimmed_negedges_")
+id_type = 2
+dim = 30
+k = 10
+coff = 0.067 #1/15
+ord = 10
+
+selected_b_2 <- FindNeighbors(selected_b_2, reduction = "pca", dims = 1:dim, k.param=k, compute.SNN=TRUE, prune.SNN=coff, verbose = FALSE)
+
+selected_b_2 <- FindClusters(selected_b_2, resolution = 0.04, verbose = FALSE)
+```
+
+```{r}
+selected_b_2 <- RunUMAP(selected_b_2, dims = 1:30, verbose = FALSE)
+```
+
+```{r}
+DimPlot(selected_b_2, label = TRUE, label.size = 3, group.by="seurat_clusters") #+ NoLegend()
+DimPlot(selected_b_2, group.by="celltype",repel = TRUE, label = TRUE, label.size = 3) #+ NoLegend()
+```
+
+## Generate SNN graph
+```{r, eval=FALSE}
+selected_b_2_snn_temp <- selected_b_2@graphs[["SCT_snn"]]
+
+dim(selected_b_2_snn_temp)
+selected_b_2_snn <- (selected_b_2_snn_temp - diag(nrow=n, ncol=n))
+```
+
+```{r, eval=FALSE}
+# ------- limitation of nodes degrees SYMMETRICS-------
+for (i in 1:n){
+  to_delete <- order(selected_b_2_snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+  selected_b_2_snn[,i][to_delete] <- integer(n-ord)
+  selected_b_2_snn[i,][to_delete] <- integer(n-ord)
+}
+```
+
+## Plot and save graphs 
+```{r setup}
+library(reticulate)
+virtualenv_create("scrna_proj")
+# py_install(c("networkx","matplotlib"), envname = "scrna_proj")
+use_virtualenv("scrna_proj")
+```
+
+```{python, eval=FALSE}
+import numpy as np
+import networkx as nx
+from matplotlib import pyplot as plt
+
+id_type, type = int(r.id_type)-1, r.type
+n = int(r.n)
+k = int(r.k)
+ord = int(r.ord)
+dim = int(r.dim)
+
+file_name = ''.join(["../../graphs/kidney/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), "_selected_to_prune.gexf"])
+
+G = nx.from_numpy_matrix(r.selected_b_2_snn)
+nx.write_gexf(G, file_name)
+
+G = nx.read_gexf(file_name)
+pos = nx.spring_layout(G)
+plt.cla()
+nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+file_name = ''.join(["../../graphs/kidney/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), "_selected_to_prune.png"])
+plt.savefig(file_name, bbox_inches='tight')
+```
+
+
+#Subsampling
+## import QA results
+```{python}
+# IMPORT GRAPH SUBSAMPLING (indicated by attribute "label1" : 1)
+import networkx as nx
+# QA_output_name = "prun_results/2901_pru_graph_snn_k10_dim30_trimmed_15v3.gexf" # 942 nodes
+QA_output_name = "prun_results/2901_pru_graph_snn_k10_dim30_trimmed_15_pruned_5.gexf" # 777 nodes
+
+QA_prune = nx.read_gexf(''.join(["../../dataIn/kidney/", QA_output_name]))
+```
+
+```{python}
+# GET THE PRUNED NODES
+# ------- CHOSE THE CORRECT OPTION BASED ON THE EXPORTED FORMAT -------
+pruned = [y[sorted(y.keys())[-1]] for x,y in sorted(QA_prune.nodes(data=True))]
+pruned = [y[sorted(y.keys())[-1]] for x,y in QA_prune.nodes(data=True)]
+```
+
+
+## Merge MetaData
+```{r}
+pruned = py$pruned
+selected_b_2 <- AddMetaData(selected_b_2, metadata=pruned, col.name="QA_pruning")
+```
+
+```{r}
+DimPlot(selected_b_2, reduction = "umap", group.by="QA_pruning")
+```
+```{r}
+# PRUNIGN THE GRAPH
+pruned = py$pruned
+pruned = unlist(pruned)
+
+selected_b_2_pruned <- selected_b_2[,!!pruned]
+
+dim(selected_b_2_pruned@assays$RNA)
+```
+
+## Create new graph
+
+```{r}
+# PRUNIGN THE GRAPH
+pruned = py$pruned
+pruned = unlist(pruned)
+
+selected_b_2_pruned <- selected_b_2[,!!pruned]
+
+# ------- Process pruned data set -------
+selected_b_2_pruned <- SCTransform(selected_b_2_pruned, method = "glmGamPoi", vars.to.regress = "percent.mt", verbose = FALSE)
+selected_b_2_pruned <- RunPCA(selected_b_2_pruned, features = VariableFeatures(object = selected_b_2_pruned))
+
+n = ncol(selected_b_2_pruned)
+dim(selected_b_2_pruned)
+
+type = c("_", "_trimmed_", "_negedges_", "_trimmed_negedges_")
+id_type = 2
+dim = 30
+k = 10
+coff = 0 #1/15
+ord = 15
+
+selected_b_2_pruned <- FindNeighbors(selected_b_2_pruned, reduction = "pca", dims = 1:dim, k.param=k, compute.SNN=TRUE) #prune.SNN=coff
+```
+
+```{r, eval=FALSE}
+selected_b_2_pruned_snn <- selected_b_2_pruned@graphs[["SCT_snn"]]
+
+dim(selected_b_2_pruned_snn)
+selected_b_2_pruned_snn_temp <- selected_b_2_pruned_snn
+selected_b_2_pruned_snn <- (selected_b_2_pruned_snn_temp - diag(nrow=n, ncol=n))
+remove(selected_b_2_pruned_snn_temp)
+# selected_b_2_pruned_snn <- round(selected_b_2_pruned_snn, digits=2)
+```
+
+```{r, eval=FALSE}
+# ------- limitation of nodes degrees SYMMETRICS-------
+for (i in 1:n){
+  to_delete <- order(selected_b_2_pruned_snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+  selected_b_2_pruned_snn[,i][to_delete] <- integer(n-ord)
+  selected_b_2_pruned_snn[i,][to_delete] <- integer(n-ord)
+}
+```
+
+```{r, eval=FALSE}
+# ------- limitation of nodes degrees UNSYMMETRIC -------
+for (i in 1:n){
+  to_delete <- order(selected_b_2_pruned_snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+  selected_b_2_pruned_snn[,i][to_delete] <- integer(n-ord)
+}
+```
+
+```{r, eval=FALSE}
+# ------- Enhance shared edges (may want to repeat multiple times) -------
+library(Matrix)
+
+# Method 1
+selected_b_2_pruned_snn_old <- selected_b_2_pruned_snn
+for (i in 1:n){
+    selected_b_2_pruned_snn[i,] <- selected_b_2_pruned_snn_old[i,]+selected_b_2_pruned_snn_old[,i]
+}
+
+# Method 2
+mutual = matrix(0,n,n)
+
+for (i in 1:n){
+    mutual[i,] <- selected_b_2_pruned_snn[i,] & selected_b_2_pruned_snn[,i] 
+}
+nnzero(mutual)
+
+selected_b_2_pruned_snn_old <- selected_b_2_pruned_snn
+for (i in 1:n){
+    selected_b_2_pruned_snn[i,] <- selected_b_2_pruned_snn_old[i,]+mutual[,i]
+}
+```
+
+## Plot and save graphs
+```{python, eval=FALSE}
+import numpy as np
+import networkx as nx
+from matplotlib import pyplot as plt
+
+id_type, type = int(r.id_type)-1, r.type
+n = int(r.n)
+k = int(r.k)
+ord = int(r.ord)
+dim = int(r.dim)
+
+file_name = ''.join(["../../graphs/kidney/", str(n), "_pru_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), ".gexf"])
+
+G = nx.from_numpy_matrix(r.selected_b_2_pruned_snn)
+nx.write_gexf(G, file_name)
+G = nx.read_gexf(file_name)
+pos = nx.spring_layout(G)
+plt.cla()
+nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+file_name = ''.join(["../../graphs/kidney/", str(n), "_pru_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), ".png"])
+plt.savefig(file_name, bbox_inches='tight')
+```
+
+```{r, eval=FALSE}
+knitr::include_graphics(py$file_name)
+```
+

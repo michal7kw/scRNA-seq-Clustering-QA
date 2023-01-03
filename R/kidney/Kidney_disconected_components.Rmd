@@ -1,0 +1,98 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+# Libraries
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(bspec)
+library(sctransform)
+library(cowplot)
+library(gridExtra)
+library(dplyr)
+library(patchwork)
+library(sctransform)
+library(glmGamPoi)
+```
+
+# Import Graph
+```{r setup}
+library(reticulate)
+virtualenv_create("scrna_proj")
+# py_install(c("networkx","matplotlib"), envname = "scrna_proj")
+use_virtualenv("scrna_proj")
+```
+
+```{r}
+n = 1108
+type = c("_", "_trimmed_", "_negedges_", "_trimmed_negedges_")
+id_type = 2
+dim = 30
+k = 5
+coff = 0.067 #1/15
+ord = 15
+```
+
+
+```{python}
+import networkx as nx
+
+id_type, type = int(r.id_type)-1, r.type
+n = int(r.n)
+k = int(r.k)
+ord = int(r.ord)
+dim = int(r.dim)
+
+name = ''.join([str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord)])
+path = "../../graphs/kidney/"
+gexf_graph_name = ''.join([path, name, ".gexf"])
+
+
+png_graph_name = ''.join([path, name, ".png"])
+png_graph_name2 = ''.join([path, name, "_2.png"])
+
+graph = nx.read_gexf(gexf_graph_name)
+```
+
+# Plot Graph
+```{r, echo=FALSE}
+knitr::include_graphics(py$png_graph_name)
+```
+# Plot Disconnected Graphs
+```{python}
+import numpy as np
+import networkx as nx
+from matplotlib import pyplot as plt
+
+print([len(c) for c in sorted(nx.connected_components(graph), key=len, reverse=True)])
+
+S = [graph.subgraph(c).copy() for c in nx.connected_components(graph)]
+
+for s in S:
+  print(len(s.nodes()))
+  if len(s.nodes()) > 15:
+    # file_name = ''.join(["../../graphs/kidney/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord),"_component_", str(len(s.nodes())), ".gexf"])
+    nx.write_gexf(s, file_name)
+    for n in s.nodes():
+      graph.nodes(data=True)[n]["valid"] = 1
+  else:
+    for n in s.nodes():
+      graph.nodes(data=True)[n]["valid"] = 0
+      
+colors = [n for n in nx.get_node_attributes(graph, "valid").values()]
+# G = nx.from_numpy_matrix(r.kidney_snn)
+# nx.write_gexf(G, file_name)
+
+pos = nx.spring_layout(graph)
+plt.cla()
+nx.draw_networkx_nodes(graph, pos, node_size=10, nodelist=graph.nodes, node_color=colors)
+nx.draw_networkx_edges(graph, pos, edgelist=graph.edges, style='solid', alpha=0.5, width=1)
+
+plt.savefig(png_graph_name2, bbox_inches='tight')
+```
+
+```{r}
+knitr::include_graphics(py$png_graph_name2)
+```

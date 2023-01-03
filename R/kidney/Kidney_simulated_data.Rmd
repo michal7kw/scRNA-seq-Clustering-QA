@@ -1,0 +1,520 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+output in --> ../../graphs/kidney/ENDO/   copy to   ../../DatasetsIn/Simulated_data (to be used by the QA)
+
+```{r, eval=FALSE}
+library(fungible)
+library(Seurat)
+library(DR.SC)
+library(ggplot2)
+library(sctransform)
+```
+
+## scDesign2
+```{r load data and preprocessing, eval=FALSE}
+# load data -----------------------------------------------------------------------------
+data_mat <- readRDS("../../data/data_sets/mouse_sie_10x.rds")
+
+# remove spike-in -----------------------------------------------------------------------
+nonspikes <- which(!grepl("ercc", rownames(data_mat), ignore.case = TRUE))
+print(paste("number of spike-ins:", nrow(data_mat)-length(nonspikes)))
+data_mat <- data_mat[nonspikes, ,drop = FALSE]
+
+# explore basic structure of data -------------------------------------------------------
+dim(data_mat)
+table(colnames(data_mat))
+```
+
+```{r split data into train and test sets, eval=FALSE}
+unique_cell_type <- names(table(colnames(data_mat)))
+set.seed(1)
+train_idx <- unlist(sapply(unique_cell_type, function(x){
+  cell_type_idx <- which(colnames(data_mat) == x)
+  n_cell_total <- length(cell_type_idx)
+  sample(cell_type_idx, floor(n_cell_total/2))
+}))
+traincount <- data_mat[, train_idx]
+testcount <- data_mat[, -train_idx]
+```
+
+```{r}
+# sim_count_copula <- readRDS(file = "../../data/data_sets/sim_count_copula_multi_type_demo.rds")
+# sim_count_copula <- readRDS(file = "../../data/data_sets/copula_result_multi_type_demo.rds")
+sim_count_copula <- readRDS(file = "../../data/data_sets/sim_count_copula_multi_type_demo2.rds")
+```
+
+```{r}
+print(ncol(sim_count_copula))
+types <- colnames(sim_count_copula)
+summary(types)
+table(types)
+colnames(sim_count_copula) <- seq_len(ncol(sim_count_copula))
+
+rownames(sim_count_copula) <- seq_len(nrow(sim_count_copula))
+head(rownames(sim_count_copula))
+                           
+smulti <- CreateSeuratObject(counts = sim_count_copula)
+smulti <- AddMetaData(smulti, metadata=types, col.name="truth")
+```
+
+```{r}
+smulti <- SCTransform(smulti, verbose = FALSE)
+smulti <- RunPCA(smulti, features = VariableFeatures(object = smulti))
+```
+
+```{r}
+smulti <- RunUMAP(smulti, dims = 1:30, verbose = FALSE)
+smulti <- FindNeighbors(smulti, dims = 1:30, verbose = FALSE)
+smulti <- FindClusters(smulti, resolution = 0.6, verbose = FALSE)
+smulti <- RunTSNE(smulti)
+```
+
+```{r}
+DimPlot(smulti, label = TRUE, label.size = 3, group.by="seurat_clusters") + NoLegend()
+DimPlot(smulti, group.by="truth", repel = TRUE, label = TRUE ,reduction="umap", label.size = 3) + NoLegend()
+```
+
+```{r}
+n = ncol(smulti)
+dim(smulti)
+
+type = c("_", "_trimmed_", "_negedges_", "_trimmed_negedges_")
+id_type = 2
+dim = 15
+k = 5
+coff = 0.067 #0.067 #1/15
+ord = 5
+
+#1. --> 0.16
+#2. --> 0.12
+#3. --> 0.20
+smulti <- FindNeighbors(smulti, dims = 1:dim, k.param=k, compute.SNN=TRUE, prune.SNN=coff)
+
+smulti_snn_temp <- smulti@graphs[["SCT_snn"]]
+
+dim(smulti_snn_temp)
+smult_snn <- smulti_snn_temp - diag(nrow=n, ncol=n)
+
+library(proxyC)
+ 
+# ------- limitation of nodes degrees SYMMETRICS-------
+print(sum(colZeros(smult_snn)))
+for (i in 1:n){
+  to_delete <- order(smult_snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+  smult_snn[,i][to_delete] <- integer(n-ord)
+  smult_snn[i,][to_delete] <- integer(n-ord)
+}
+print(sum(colZeros(smult_snn)))
+```
+
+```{r, eval=FALSE}
+# ------- Enhance shared edges (may want to repeat multiple times) -------
+library(Matrix)
+
+# Method 2 (better)
+mutual = matrix(0,n,n)
+
+for (i in 1:n){
+    mutual[i,] <- smult_snn[i,] & smult_snn[,i] 
+}
+nnzero(mutual)
+
+smult_snn_old <- smult_snn
+for (i in 1:n){
+    smult_snn[i,] <- smult_snn_old[i,]+mutual[,i]
+}
+```
+
+```{python}
+import numpy as np
+import networkx as nx
+from matplotlib import pyplot as plt
+
+def disconnected_components(G):
+    lengths  = [len(c) for c in sorted(nx.connected_components(G), key=len, reverse=True)]
+    print(lengths)
+    S = [G.subgraph(c).copy() for c in nx.connected_components(G)]
+    for s in S:
+        print(len(s.nodes()))
+        if len(s.nodes()) > 15:
+            subindex = 0
+            for n in s.nodes():
+                G.nodes(data=True)[n]["subindex"] = subindex
+                G.nodes(data=True)[n]["valid"] = 1
+                subindex = subindex + 1            
+        else:
+            for n in s.nodes():
+                G.nodes(data=True)[n]["valid"] = 0
+    return G, S, lengths
+  
+```
+
+```{python}
+G = nx.from_numpy_matrix(r.smult_snn)
+
+G, S, lengths = disconnected_components(G)
+print(lengths)
+G = S[0]
+G.number_of_nodes()
+
+to_remove=[list(graph.nodes) for graph in S[1:]]
+to_remove_flat=[item for sublist in to_remove for item in sublist]
+print("to be removed: ", end="")
+print(to_remove_flat)
+G.remove_nodes_from(to_remove_flat)
+```
+
+```{python}
+list(nx.isolates(G))
+```
+
+```{r, eval=FALSE}
+smulti_backup <- smulti
+smulti <- smulti_backup
+```
+
+```{r, eval=False}
+toRemove <- py$to_remove_flat
+print(length(colnames(smulti)))
+      
+toRemove_col_name <- colnames(smulti)[as.vector(toRemove)]
+
+## filter them out:
+smulti_filtered <- smulti[,!colnames(smulti) %in% toRemove_col_name]
+
+length(colnames(smulti_filtered)) ## 78
+
+smulti <- smulti_filtered
+
+n = ncol(smulti)
+dim(smulti)
+
+coff = 0.0001
+
+smulti <- FindNeighbors(smulti, dims = 1:dim, k.param=k, compute.SNN=TRUE, prune.SNN=coff)
+
+smulti_snn_temp <- smulti@graphs[["SCT_snn"]]
+
+dim(smulti_snn_temp)
+smult_snn <- smulti_snn_temp - diag(nrow=n, ncol=n)
+```
+
+```{python}
+id_type, type = int(r.id_type)-1, r.type
+n = int(r.n)
+k = int(r.k)
+ord = int(r.ord)
+dim = int(r.dim)
+
+G = nx.from_numpy_matrix(r.smult_snn)
+G.number_of_nodes()
+
+file_name = ''.join(["../../graphs/R_generated/simulated_data/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), ".gexf"])
+nx.write_gexf(G, file_name)
+
+G = nx.read_gexf(file_name)
+pos = nx.spring_layout(G)
+plt.cla()
+nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+file_name = ''.join(["../../graphs/R_generated/simulated_data/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), ".png"])
+plt.savefig(file_name, bbox_inches='tight')
+```
+
+```{python}
+colors = []
+dataset = "simulated_data/"
+for i in range(0,15):
+  print(i)
+  ex_number = str(i)
+  QA_output_name = "sample_number" + ex_number + ".gexf"
+  QA_clusters = nx.read_gexf(''.join(["../../graphs/Python_generated/", dataset, "multi_eng/",QA_output_name]))
+  color = [y[sorted(y.keys())[-1]] for x,y in QA_clusters.nodes(data=True)]
+  colors.append(color)
+  
+len(color)
+```
+
+```{r}
+redu = "umap"
+dataset = "simulated_data/"
+my_cols <- c('#003366','#00cc99','#cc9900','#ff0066','#6699ff','#E6C122','#000195','#B95FBB','#28CECA','#ff9a36','#2FF18B','#aeadb3','#CCB1F1','#D4D915','#A4DFF2','#4B4BF7')
+
+colors <- py$colors
+graph_colors <- my_cols[1:6]
+size <- length(unlist(colors[1]))
+
+# --- PLOT QA STATES ---
+for (i in c(1:15)) {
+  print(i)
+  color <- colors[i]
+  color <- unlist(color)
+  color <- color + 1
+  
+  ord <- order(table(color), decreasing = TRUE)
+  color_new <- color
+  for (j in c(1:size)){
+    color_new[j] <- switch(color[j], which(ord==1), which(ord==2), which(ord==3), which(ord==4), which(ord==5), which(ord==6))
+  }
+  
+  smulti <- AddMetaData(smulti, metadata=color_new, col.name="QA")
+  
+  DimPlot(smulti, reduction = redu, group.by="QA", cols=graph_colors) + NoLegend()
+  ggsave(paste("../../graphs/R_generated/", dataset, "multi_eng/", "selected_a_2_QA_", as.character(i), ".png", sep = ""), width = 5, height = 5)
+}
+
+# --- PLOT SEURAT ---
+# color <- as.numeric(smulti$seurat_clusters)
+# ord <- order(table(color), decreasing = TRUE)
+# color_new <- color
+# for (j in c(1:size)){
+#   color_new[j] <- switch(color[j], which(ord==1), which(ord==2), which(ord==3), which(ord==4), which(ord==5))
+# }
+# smulti <- AddMetaData(smulti, metadata=color_new, col.name="seurat_clusters")
+# DimPlot(smulti, reduction = redu, group.by="seurat_clusters", cols=graph_colors) + NoLegend()
+
+DimPlot(smulti, reduction = redu, group.by="seurat_clusters", cols=graph_colors) + NoLegend()
+ggsave(paste("../../graphs/R_generated/", dataset, "multi_eng/", "selected_a_2_seurat.png", sep=""), width = 5, height = 5)
+
+
+# --- PLOT CELL TYPES ---
+# cell_types = smulti$truth
+# for (i in 1:size) {
+#   color_new[i] <- switch(cell_types[i], "Myofibroblast"=5, "Descending vasa recta endothelium"=4, "Ascending vasa recta endothelium"=3, "Peritubular capillary endothelium 2"=2, "Peritubular capillary endothelium 1"=1)
+# }
+# 
+# smulti <- AddMetaData(smulti, metadata=color_new, col.name="celltype_new")
+# DimPlot(selected_a_2, reduction = redu, group.by="celltype_new", cols=graph_colors) + NoLegend() #, raster.dpi=c()
+DimPlot(smulti, reduction = redu, group.by="truth", cols=graph_colors) + NoLegend() #, raster.dpi=c()
+
+ggsave(paste("../../graphs/R_generated/", dataset, "multi_eng/", "selected_a_2_celltypes.png", sep=""), width = 5, height = 5)
+```
+
+## Spatial sc-RNA
+```{r, eval=FALSE}
+
+my_cols <- c('#003366','#00cc99','#cc9900','#ff0066','#6699ff','#E6C122','#000195','#B95FBB','#28CECA','#ff9a36'
+             ,'#2FF18B','#aeadb3','#CCB1F1','#D4D915','#A4DFF2','#4B4BF7')
+graph_colors <- my_cols[1:5]
+
+sim_data <- gendata_RNAExp(height=0, width=0, platform="scRNAseq", p =2000, q=50, K=5, 
+                            G=8,sigma2=0.5, tau=8, seed=1, view=FALSE)
+
+sim_data <- SCTransform(sim_data)
+sim_data <- RunPCA(sim_data, features = VariableFeatures(object = sim_data))
+```
+
+```{r, eval=FALS}
+colnames(x = sim_data)[1:10]
+rownames(x = sim_data)[1:10]
+dim(sim_data@assays$RNA)
+```
+
+
+```{r, eval=FALS}
+DimPlot(sim_data, reduction = "pca", group.by="true_clusters", cols=graph_colors) + NoLegend()
+```
+```{r, eval=FALS}
+sim_data <- RunUMAP(sim_data, dims = 1:30, verbose = FALSE)
+sim_data <- FindNeighbors(sim_data, dims = 1:30, verbose = FALSE)
+sim_data <- FindClusters(sim_data, resolution = 2.0, verbose = FALSE)
+```
+
+```{r, eval=FALS}
+DimPlot(sim_data, label = TRUE, label.size = 3, group.by="seurat_clusters", cols=graph_colors) #+ NoLegend()
+DimPlot(sim_data, group.by="true_clusters",repel = TRUE, label = TRUE, label.size = 3, cols=graph_colors) #+ NoLegend()
+```
+```{r, eval=FALS}
+n = ncol(sim_data)
+dim(sim_data)
+
+type = c("_", "_trimmed_", "_negedges_", "_trimmed_negedges_")
+id_type = 2
+dim = 30
+k = 10
+coff = 0.067 #1/15
+ord = 15
+
+sim_data <- FindNeighbors(sim_data, reduction = "pca", dims = 1:dim, k.param=k, compute.SNN=TRUE, prune.SNN=coff)
+
+sim_data_snn_temp <- sim_data@graphs[["SCT_snn"]]
+
+dim(sim_data_snn_temp)
+sim_data_snn <- sim_data_snn_temp - diag(nrow=n, ncol=n)
+```
+
+```{r, eval=FALS}
+library(proxyC)
+# ------- limitation of nodes degrees SYMMETRICS-------
+print(sum(colZeros(sim_data_snn)))
+for (i in 1:n){
+  to_delete <- order(sim_data_snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+  sim_data_snn[,i][to_delete] <- integer(n-ord)
+  sim_data_snn[i,][to_delete] <- integer(n-ord)
+}
+print(sum(colZeros(sim_data_snn)))
+```
+
+## Python part
+```{python}
+import numpy as np
+import networkx as nx
+from matplotlib import pyplot as plt
+
+id_type, type = int(r.id_type)-1, r.type
+n = int(r.n)
+k = int(r.k)
+ord = int(r.ord)
+dim = int(r.dim)
+
+file_name = ''.join(["../../graphs/R_generated/simulated_data/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), ".gexf"])
+
+G = nx.from_numpy_matrix(r.sim_data_snn)
+nx.write_gexf(G, file_name)
+
+G = nx.read_gexf(file_name)
+pos = nx.spring_layout(G)
+plt.cla()
+nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+file_name = ''.join(["../../graphs/R_generated/simulated_data/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), ".png"])
+plt.savefig(file_name, bbox_inches='tight')
+```
+```{r setup}
+library(reticulate)
+virtualenv_create("scrna_proj")
+# py_install(c("networkx","matplotlib"), envname = "scrna_proj")
+use_virtualenv("scrna_proj")
+```
+
+
+```{python}
+import networkx as nx
+# QA_output_name = "1000_cqm_graph_snn_k10_dim30_g0005_trimmed_15.gexf"
+# QA_clusters = nx.read_gexf(''.join(["../../dataIn/kidney/", QA_output_name]))
+dataset = "simulated/"
+ex_number = "1"
+QA_output_name = "sample_number" + ex_number + ".gexf"
+QA_clusters = nx.read_gexf(''.join(["../../dataIn/", dataset, QA_output_name]))
+
+# ------- CHOSE THE CORRECT OPTION BASED ON THE EXPORTED FORMAT -------
+colors = [y[sorted(y.keys())[-1]] for x,y in sorted(QA_clusters.nodes(data=True))]
+colors = [y[sorted(y.keys())[-1]] for x,y in QA_clusters.nodes(data=True)]
+len(colors)
+```
+
+## Merge Clusters MetaData
+```{r}
+my_cols <- c('#003366','#00cc99','#cc9900','#ff0066','#6699ff','#E6C122','#000195','#B95FBB','#28CECA','#ff9a36'
+             ,'#2FF18B','#aeadb3','#CCB1F1','#D4D915','#A4DFF2','#4B4BF7')
+
+colors = py$colors
+colors = unlist(colors)
+sim_data <- AddMetaData(sim_data, metadata=colors, col.name="QA")
+DimPlot(sim_data, reduction = "umap", group.by="QA", cols=my_cols[1:5]) + NoLegend()
+```
+```{python}
+colors = []
+for i in range(0,15):
+  print(i)
+  ex_number = str(i)
+  QA_output_name = "sample_number" + ex_number + ".gexf"
+  QA_clusters = nx.read_gexf(''.join(["../../dataIn/", dataset, QA_output_name]))
+  color = [y[sorted(y.keys())[-1]] for x,y in QA_clusters.nodes(data=True)]
+  colors.append(color)
+
+```
+
+```{r}
+redu <- "umap"
+colors <- py$colors
+graph_colors <- my_cols[1:5]
+size <- length(unlist(colors[1]))
+
+# --- PLOT QA STATES ---
+for (i in c(1:15)) {
+  print(i)
+  color <- colors[i]
+  color <- unlist(color)
+  color <- color + 1
+  
+  ord <- order(table(color), decreasing = TRUE)
+  color_new <- color
+  for (j in c(1:size)){
+    color_new[j] <- switch(color[j], which(ord==1), which(ord==2), which(ord==3), which(ord==4), which(ord==5))
+  }
+  
+  sim_data <- AddMetaData(sim_data, metadata=color_new, col.name="QA")
+  
+  DimPlot(sim_data, reduction = redu, group.by="QA", cols=graph_colors) + NoLegend()
+  ggsave(paste("../../output/multi_eng/simulated/sim_data_QA_", as.character(i), ".png", sep = ""), width = 5, height = 5)
+}
+
+# --- PLOT SEURAT ---
+color <- as.numeric(sim_data$seurat_clusters)
+ord <- order(table(color), decreasing = TRUE)
+color_new <- color
+for (j in c(1:size)){
+  color_new[j] <- switch(color[j], which(ord==1), which(ord==2), which(ord==3), which(ord==4), which(ord==5))
+}
+sim_data <- AddMetaData(sim_data, metadata=color_new, col.name="seurat_clusters")
+DimPlot(sim_data, reduction = redu, group.by="seurat_clusters", cols=graph_colors) + NoLegend()
+ggsave(paste("../../output/multi_eng/simulated/sim_data_seurat.png"), width = 5, height = 5)
+
+
+# --- PLOT CELL TYPES ---
+# cell_types = sim_data$celltype
+# for (i in 1:size) {
+#   color_new[i] <- switch(cell_types[i], "Myofibroblast"=5, "Descending vasa recta endothelium"=4, "Ascending vasa recta endothelium"=3, "Peritubular capillary endothelium 2"=2, "Peritubular capillary endothelium 1"=1)
+# }
+
+sim_data <- AddMetaData(sim_data, metadata=color_new, col.name="true_clusters")
+DimPlot(sim_data, reduction = redu, group.by="true_clusters", cols=graph_colors) + NoLegend() #, raster.dpi=c()
+ggsave(paste("../../output/multi_eng/simulated/sim_data_celltypes.png"), width = 5, height = 5)
+```
+
+## Archive
+```{r}
+head(sim_data$nCount_RNA)
+```
+
+
+```{r, eval=False}
+## Generate Population of scores with "monte"
+sample.data <- monte(seed = 123, 
+                nvar=5, 
+                nclus = 5, 
+                clus.size = c(100, 200, 50, 500, 150), 
+                eta2 = c(0.619, 0.401, 0.941, 0.929, 0.101),
+                cor.list = NULL,
+                random.cor = FALSE,
+                skew.list = NULL,
+                kurt.list = NULL,
+                secor = NULL,
+                compactness = NULL,
+                sortMeans = TRUE)
+               
+sample.data.t <- t(sample.data$data[,-c(1)])
+sample.data.t <- abs(sample.data.t)*100
+clusters <- t(sample.data$data[,c(1)])
+typeof(sample.data.t)
+dim(sample.data.t)
+sample.data.df <- as.data.frame(sample.data.t)
+dim(sample.data.df)
+
+sim.Seurat <- CreateSeuratObject(
+  counts  = sample.data.df,
+  project = "CreateSeuratObject",
+  assay = "RNA"
+)
+
+sim.Seurat <- AddMetaData(sim.Seurat, metadata=as.vector(clusters), col.name="clusters")
+sim.Seurat <- SCTransform(sim.Seurat)
+sim.Seurat <- RunPCA(sim.Seurat, features = VariableFeatures(object = sim.Seurat))
+
+DimPlot(sim.Seurat, reduction = "pca", group.by="clusters") + NoLegend()
+```

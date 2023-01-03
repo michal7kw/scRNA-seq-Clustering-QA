@@ -1,0 +1,230 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Libraries
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(bspec)
+library(sctransform)
+library(cowplot)
+library(gridExtra)
+library(dplyr)
+library(patchwork)
+library(sctransform)
+library(glmGamPoi)
+library(SeuratDisk)
+```
+
+# Compare clusters (files' prefix: "cc")
+creates Seurat object:    cc_pbmc3k_QA
+takes QA clusters:        QA_clusters
+## Select data subset
+```{r}
+# ------- use previously created Seurat object -------
+# pbmc3k <- readRDS(file = "data/pbmc_data/pbmc3k/pbmc3k_init.rds")
+
+# ----- Load new PBMC dataset -----
+pbmc.data <- Read10X(data.dir = "../../data/pbmc_data/pbmc3k/filtered_gene_bc_matrices/hg19/")
+
+# ------- Initialize the Seurat object with the raw (non-normalized data) -------
+pbmc3k <- CreateSeuratObject(counts = pbmc.data, project = "pbmc3k", min.cells = 3, min.features = 200)
+
+pbmc3k[["percent.mt"]] <- PercentageFeatureSet(pbmc3k, pattern = "^MT-")
+pbmc3k <- subset(pbmc3k, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+
+# ------- Subset the data -------
+cc_pbmc3k_QA <- pbmc3k[,1:512]
+
+cc_pbmc3k_QA <- SCTransform(cc_pbmc3k_QA, method = "glmGamPoi", vars.to.regress = "percent.mt", verbose = FALSE)
+cc_pbmc3k_QA <- RunPCA(cc_pbmc3k_QA, features = VariableFeatures(object = cc_pbmc3k_QA))
+
+# ------- Neighbors evaluation, SNN -------
+n = ncol(cc_pbmc3k_QA)
+dim(cc_pbmc3k_QA)
+
+dim = 15
+k = 5
+coff = 0 #1/15
+
+cc_pbmc3k_QA <- FindNeighbors(cc_pbmc3k_QA, reduction = "pca", dims = 1:dim, k.param=k, compute.SNN=TRUE) #prune.SNN=coff
+```
+
+## Import QA clusters
+```{r setup}
+library(reticulate)
+virtualenv_create("scrna_proj")
+# py_install(c("networkx","matplotlib"), envname = "scrna_proj")
+use_virtualenv("scrna_proj")
+```
+
+```{python}
+import networkx as nx
+QA_output_name = "512_cqm_graph_snn_k5_dim15_g0005_trimmed_15v2.gexf"
+
+QA_clusters = nx.read_gexf(''.join(["../../dataIn/", QA_output_name]))
+
+# ------- CHOSE THE CORRECT OPTION BASED ON THE EXPORTED FORMAT -------
+colors = [y[sorted(y.keys())[-1]] for x,y in sorted(QA_clusters.nodes(data=True))]
+colors = [y[sorted(y.keys())[-1]] for x,y in QA_clusters.nodes(data=True)]
+```
+
+## Merge Clusters MetaData
+```{r}
+colors = py$colors
+colors = unlist(colors)
+cc_pbmc3k_QA <- AddMetaData(cc_pbmc3k_QA, metadata=colors, col.name="QA")
+DimPlot(cc_pbmc3k_QA, reduction = "pca", group.by="QA")
+```
+
+```{r}
+# ------- Find Seurat Clusters -------
+cc_pbmc3k_QA <- FindClusters(cc_pbmc3k_QA, verbose = FALSE, resolution = 0.9, algorithm = 1)
+cc_pbmc3k_QA <- RunUMAP(cc_pbmc3k_QA, dim=1:15)
+```
+
+```{r}
+png(file="../../output/clusters_QA_enh.png", width = 820, height = 480)
+DimPlot(cc_pbmc3k_QA, reduction = "umap", group.by="QA") + NoLegend()
+dev.off()
+
+png(file="../../output/clusters_Clasic_enh.png")
+DimPlot(cc_pbmc3k_QA, reduction = "umap", group.by="seurat_clusters") # + NoLegend()
+dev.off()
+
+par(mfrow = c(1, 2))
+DimPlot(cc_pbmc3k_QA, reduction = "umap", group.by="QA") # + NoLegend()
+DimPlot(cc_pbmc3k_QA, reduction = "umap", group.by="seurat_clusters") # + NoLegend()
+```
+
+## Look for the marker genes
+```{r, eval=FALSE}
+Idents(cc_pbmc3k_QA) <- cc_pbmc3k_QA$seurat_clusters
+
+Classic_pbmc3k_QA_markers <- FindAllMarkers(cc_pbmc3k_QA, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0)
+Classic_pbmc3k_QA_top_2 <- Classic_pbmc3k_QA_markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 2, order_by = avg_log2FC)
+  
+print(Classic_pbmc3k_QA_top_2$gene,n=nrow(Classic_pbmc3k_QA_markers$gene))
+```
+
+```{r, eval=FALSE}
+Idents(cc_pbmc3k_QA) <- cc_pbmc3k_QA$QA
+
+QA_pbmc3k_QA_markers <- FindAllMarkers(cc_pbmc3k_QA, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0)
+QA_pbmc3k_QA_top_2 <- QA_pbmc3k_QA_markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 2, order_by = avg_log2FC)
+  
+print(QA_pbmc3k_QA_top_2$gene,n=nrow(QA_pbmc3k_QA_markers$gene))
+```
+
+```{r, eval=FALSE}
+png(file="../../output/Classic_markers.png", width = 1920, height = 1080)
+FeaturePlot(cc_pbmc3k_QA, features = c(Classic_pbmc3k_QA_top_2$gene)) + ggtitle("Classic_markers")
+dev.off()
+
+png(file="../../output/QA_markers.png", width = 1920, height = 1080)
+FeaturePlot(cc_pbmc3k_QA, features = c(QA_pbmc3k_QA_top_2$gene)) + ggtitle("QA_markers")
+dev.off()
+```
+
+## Annotate
+```{r, eval=FALSE}
+library(SingleR)
+monaco.ref<- celldex::MonacoImmuneData()
+sce <- as.SingleCellExperiment(DietSeurat(cc_pbmc3k_QA))
+
+monaco.main_log <- SingleR(test = sce,assay.type.test = 1,ref = monaco.ref,labels = monaco.ref$label.main)
+monaco.fine_log <- SingleR(test = sce,assay.type.test = 1,ref = monaco.ref,labels = monaco.ref$label.fine)
+```
+
+```{r, eval=FALSE}
+table(monaco.main_log$pruned.labels)
+table(monaco.fine_log$pruned.labels)
+
+cc_pbmc3k_QA@meta.data$monaco.main <- monaco.main_log$pruned.labels
+cc_pbmc3k_QA@meta.data$monaco.fine <- monaco.fine_log$pruned.labels
+```
+
+```{r, eval=FALSE}
+cc_pbmc3k_QA <- SetIdent(cc_pbmc3k_QA, value = "monaco.main")
+
+png(file="../../output/pbmc3k_QA_cell_types_main.png", width = 720, height = 480)
+DimPlot(cc_pbmc3k_QA, label = T , repel = T, label.size = 5, group.by="monaco.main") + NoLegend() + ggtitle("pbmc3k_QA_cell_type")
+dev.off()
+
+DimPlot(cc_pbmc3k_QA, label = T , repel = T, label.size = 5, group.by="monaco.main") + NoLegend() + ggtitle("pbmc3k_QA_cell_type")
+```
+
+```{r, eval=FALSE}
+cc_pbmc3k_QA <- SetIdent(cc_pbmc3k_QA, value = "monaco.fine")
+
+png(file="../../output/pbmc3k_QA_cell_types_fine.png", width = 820, height = 480)
+DimPlot(cc_pbmc3k_QA, label = F, label.size = 4)  + ggtitle("pbmc3k_QA_cell_type")
+dev.off()
+
+DimPlot(cc_pbmc3k_QA, label = F, label.size = 2) + ggtitle("pbmc3k_QA_cell_type")
+```
+
+# Legacy, Long execution time: Check with the reference (files' prefix: "rc")
+creates Seurat object:    rc_pbmc3k
+## Load reference
+```{r, eval=FALSE}
+reference <- LoadH5Seurat("../../data/pbmc_multimodal.h5seurat")
+```
+
+```{r, eval=FALSE}
+DimPlot(object = reference, reduction = "wnn.umap", group.by = "celltype.l2", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+```
+
+```{r, eval=FALSE}
+library(SeuratData)
+InstallData('pbmc3k')
+
+# pbmc3k <- readRDS(file = "data/pbmc_data/pbmc3k/pbmc3k_init.rds")
+```
+
+```{r, eval=FALSE}
+# saveRDS(rc_pbmc3k, file = "./output/rc_pbmc3k.rds")
+# saveRDS(anchors, file = "./output/anchors.rds")
+```
+
+```{r, eval=FALSE}
+rc_pbmc3k <- SCTransform(pbmc3k, verbose = FALSE)
+```
+
+```{r, eval=FALSE}
+anchors <- FindTransferAnchors(
+  reference = reference,
+  query = rc_pbmc3k,
+  normalization.method = "SCT",
+  reference.reduction = "spca",
+  dims = 1:50
+)
+```
+
+```{r, eval=FALSE}
+rc_pbmc3k <- MapQuery(
+  anchorset = anchors,
+  query = rc_pbmc3k,
+  reference = reference,
+  refdata = list(
+    celltype.l1 = "celltype.l1",
+    celltype.l2 = "celltype.l2",
+    predicted_ADT = "ADT"
+  ),
+  reference.reduction = "spca", 
+  reduction.model = "wnn.umap"
+)
+```
+
+```{r, eval=FALSE}
+p1 = DimPlot(rc_pbmc3k, reduction = "ref.umap", group.by = "predicted.celltype.l1", label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+p2 = DimPlot(rc_pbmc3k, reduction = "ref.umap", group.by = "predicted.celltype.l2", label = TRUE, label.size = 3 ,repel = TRUE) + NoLegend()
+p1 + p2
+```

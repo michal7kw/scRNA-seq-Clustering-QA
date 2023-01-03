@@ -1,0 +1,173 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Libraries
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(bspec)
+library(sctransform)
+library(cowplot)
+library(gridExtra)
+library(dplyr)
+library(patchwork)
+library(sctransform)
+library(glmGamPoi)
+```
+
+# Data Sampling and Pruning (files' prefix: "pd")
+takes QA sub-sampled graph:   QA_prune
+creates Seurat object:        pbmc3k_QA_pd        (original data)
+creates Seurat object:        pbmc3k_QA_pruned    (pruned data)
+creates SNN graph:            pbmc3k_QA_pruned_snn
+
+## Import graph subsampling
+```{r setup}
+library(reticulate)
+virtualenv_create("scrna_proj")
+# py_install(c("networkx","matplotlib"), envname = "scrna_proj")
+use_virtualenv("scrna_proj")
+```
+
+```{python}
+# IMPORT GRAPH SUBSAMPLING (indicated by attribute "label1" : 1)
+import networkx as nx
+QA_output_name = "1024_pru_graph_snn_k5_dim15_trimmed_5.gexf"
+
+QA_prune = nx.read_gexf(''.join(["../../dataIn/", QA_output_name]))
+```
+
+```{python}
+# GET THE PRUNED NODES
+# ------- CHOSE THE CORRECT OPTION BASED ON THE EXPORTED FORMAT -------
+pruned = [y[sorted(y.keys())[-1]] for x,y in sorted(QA_prune.nodes(data=True))]
+pruned = [y[sorted(y.keys())[-1]] for x,y in QA_prune.nodes(data=True)]
+```
+
+## Created Pruned Graph
+```{r}
+# ------- use previously created Seurat object -------
+# pbmc3k <- readRDS(file = "data/pbmc_data/pbmc3k/pbmc3k_init.rds")
+
+# ----- Load new PBMC dataset -----
+pbmc.data <- Read10X(data.dir = "../../data/pbmc_data/pbmc3k/filtered_gene_bc_matrices/hg19/")
+
+# ------- Initialize the Seurat object with the raw (non-normalized data) -------
+pbmc3k <- CreateSeuratObject(counts = pbmc.data, project = "pbmc3k", min.cells = 3, min.features = 200)
+
+pbmc3k[["percent.mt"]] <- PercentageFeatureSet(pbmc3k, pattern = "^MT-")
+pbmc3k <- subset(pbmc3k, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+
+# PRUNIGN THE GRAPH
+pruned = py$pruned
+pruned = unlist(pruned)
+# pbmc3k_QA <- pbmc3k
+pbmc3k_QA_pd <- pbmc3k[,1:1024]
+pbmc3k_QA_pruned <- pbmc3k_QA_pd[,!!pruned]
+
+# ------- Process original data set -------
+pbmc3k_QA_pd <- SCTransform(pbmc3k_QA_pd, method = "glmGamPoi", vars.to.regress = "percent.mt", verbose = FALSE)
+pbmc3k_QA_pd <- RunPCA(pbmc3k_QA_pd, features = VariableFeatures(object = pbmc3k_QA_pd))
+
+# ------- Process pruned data set -------
+pbmc3k_QA_pruned <- SCTransform(pbmc3k_QA_pruned, method = "glmGamPoi", vars.to.regress = "percent.mt", verbose = FALSE)
+pbmc3k_QA_pruned <- RunPCA(pbmc3k_QA_pruned, features = VariableFeatures(object = pbmc3k_QA_pruned))
+
+n = ncol(pbmc3k_QA_pruned)
+dim(pbmc3k_QA_pruned)
+
+type = c("_", "_trimmed_", "_negedges_", "_trimmed_negedges_")
+id_type = 2
+dim = 15
+k = 15
+coff = 0 #1/15
+ord = 15
+
+pbmc3k_QA_pd <- FindNeighbors(pbmc3k_QA_pd, reduction = "pca", dims = 1:dim, k.param=k, compute.SNN=TRUE) #prune.SNN=coff
+pbmc3k_QA_pruned <- FindNeighbors(pbmc3k_QA_pruned, reduction = "pca", dims = 1:dim, k.param=k, compute.SNN=TRUE) #prune.SNN=coff
+
+pbmc3k_QA_pruned_snn <- pbmc3k_QA_pruned@graphs[["SCT_snn"]]
+
+dim(pbmc3k_QA_pruned_snn)
+pbmc3k_QA_pruned_snn_temp <- pbmc3k_QA_pruned_snn
+pbmc3k_QA_pruned_snn <- pbmc3k_QA_pruned_snn_temp - diag(n)
+remove(pbmc3k_QA_pruned_snn_temp)
+
+# ------- limitation of nodes degrees SYMMETRIC -------
+# for (i in 1:n){
+#   to_delete <- order(pbmc3k_QA_snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+#   pbmc3k_QA_snn[,i][to_delete] <- integer(n-ord)
+#   pbmc3k_QA_snn[i,][to_delete] <- integer(n-ord)
+# }
+
+pbmc3k_QA_pruned_snn <- round(pbmc3k_QA_pruned_snn, digits=2)
+```
+
+## Merge MetaData
+```{r}
+pbmc3k_QA_pd <- AddMetaData(pbmc3k_QA_pd, metadata=pruned, col.name="QA_pruning")
+```
+
+```{r}
+pbmc3k_QA_pd <- RunUMAP(pbmc3k_QA_pd, dim=1:15)
+DimPlot(pbmc3k_QA_pd, reduction = "umap", group.by="QA_pruning")
+```
+
+## Enhance connectivity
+```{r}
+# ------- Enhance shared edges (may want to repeat multiple times) -------
+pbmc3k_QA_pruned_snn_old <- pbmc3k_QA_pruned_snn
+for (i in 1:n){
+    pbmc3k_QA_pruned_snn[i,] <- pbmc3k_QA_pruned_snn_old[i,]+pbmc3k_QA_pruned_snn_old[,i]
+}
+```
+
+```{r, eval=TRUE}
+# ------- limitation of nodes degrees -------
+for (i in 1:n){
+  to_delete <- order(pbmc3k_QA_pruned_snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+  pbmc3k_QA_pruned_snn[,i][to_delete] <- integer(n-ord)
+  pbmc3k_QA_pruned_snn[i,][to_delete] <- integer(n-ord)
+}
+```
+
+```{r}
+mean(as.matrix(pbmc3k_QA_pruned_snn))
+mean(as.matrix(pbmc3k_QA_pruned_snn_old))
+remove(pbmc3k_QA_pruned_snn_old)
+```
+
+
+## Plot and save graphs
+```{python}
+import numpy as np
+import networkx as nx
+from matplotlib import pyplot as plt
+
+id_type, type = int(r.id_type)-1, r.type
+n = int(r.n)
+k = int(r.k)
+ord = int(r.ord)
+dim = int(r.dim)
+
+file_name = ''.join(["../../graphs/pbmc3k/", str(n), "pru_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), ".gexf"])
+
+G = nx.from_numpy_matrix(r.pbmc3k_QA_pruned_snn)
+nx.write_gexf(G, file_name)
+G = nx.read_gexf(file_name)
+pos = nx.spring_layout(G)
+plt.cla()
+nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+file_name = ''.join(["../../graphs/pbmc3k/", str(n), "pru_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), ".png"])
+plt.savefig(file_name, bbox_inches='tight')
+```
+
+```{r, echo=FALSE}
+knitr::include_graphics(py$file_name)
+```
+

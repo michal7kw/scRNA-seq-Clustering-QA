@@ -1,0 +1,278 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(dbscan)
+library(tidyverse)
+library(ggplot2)
+library(Seurat)
+```
+
+```{r setup}
+library(reticulate)
+virtualenv_create("scrna_proj")
+# py_install(c("networkx","matplotlib"), envname = "scrna_proj")
+use_virtualenv("scrna_proj")
+```
+
+# Generate Datasets
+```{python}
+import time
+import warnings
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+from sklearn import cluster, datasets, mixture
+from sklearn.neighbors import kneighbors_graph
+from sklearn.preprocessing import StandardScaler
+from itertools import cycle, islice
+
+np.random.seed(0)
+plt.cla()
+# ============
+# Generate datasets. We choose the size big enough to see the scalability
+# of the algorithms, but not too big to avoid too long running times
+# ============
+n_samples = 256
+noisy_circles = datasets.make_circles(n_samples=n_samples, factor=0.5, noise=0.05)
+noisy_moons = datasets.make_moons(n_samples=n_samples, noise=0.05)
+blobs = datasets.make_blobs(n_samples=n_samples, random_state=8)
+no_structure = np.random.rand(n_samples, 2), None
+
+# Anisotropicly distributed data
+random_state = 170
+X, y = datasets.make_blobs(n_samples=n_samples, random_state=random_state)
+transformation = [[0.6, -0.6], [-0.4, 0.8]]
+X_aniso = np.dot(X, transformation)
+aniso = (X_aniso, y)
+
+# blobs with varied variances
+varied = datasets.make_blobs(
+    n_samples=n_samples, cluster_std=[1.0, 2.5, 0.5], random_state=random_state
+)
+
+
+default_base = {
+    "quantile": 0.3,
+    "eps": 0.3,
+    "damping": 0.9,
+    "preference": -200,
+    "n_neighbors": 10,
+    "n_clusters": 3,
+    "min_samples": 20,
+    "xi": 0.05,
+    "min_cluster_size": 0.1,
+}
+
+datasets = [noisy_circles,noisy_moons, varied, aniso, blobs, no_structure]
+  
+
+fig, axs = plt.subplots(2, 3)
+axs[0, 0].scatter(noisy_circles[0][:, 0], noisy_circles[0][:, 1])
+axs[1, 0].scatter(noisy_moons[0][:, 0], noisy_moons[0][:, 1])
+axs[0, 1].scatter(varied[0][:, 0], varied[0][:, 1])
+axs[1, 1].scatter(aniso[0][:, 0], aniso[0][:, 1])
+axs[1, 2].scatter(blobs[0][:, 0], blobs[0][:, 1])
+axs[0, 2].scatter(no_structure[0][:, 0], no_structure[0][:, 1])
+fig.tight_layout()
+plt.show()
+
+plt.close('all')
+```
+
+# Generate Single SNN Graph
+```{r}
+df <- as.data.frame(py$noisy_circles[1])
+rown <- dim(df)[1]
+row.names(df) <- 1 : rown
+mx = as.matrix(df)
+snn = FindNeighbors(mx, k.param=10, annoy.metric = "euclidean", prune.SNN = 0)$snn
+n = dim(snn)[1]
+snn <- snn - diag(n)
+
+# ord = 5
+# for (i in 1:n){
+#   to_delete <- order(snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+#   snn[,i][to_delete] <- integer(n-ord)
+#   snn[i,][to_delete] <- integer(n-ord)
+# }
+```
+
+# Save Single GNN graph
+```{python}
+import networkx as nx
+
+file_name = "./circles.gexf"
+
+G = nx.from_numpy_matrix(r.snn)
+nx.write_gexf(G, file_name)
+
+G = nx.read_gexf(file_name)
+pos = nx.spring_layout(G)
+plt.cla()
+nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+file_name = "./circles.png"
+plt.savefig(file_name, bbox_inches='tight')
+```
+
+# Check Single Clustering
+```{python}
+file_name = "/benchmarks/256_graph_snn_k5_dim15_gf005_trimmed_15benchmark_out.gexf"
+
+clusters = nx.read_gexf(''.join(["../../dataIn/", file_name]))
+
+# [y[sorted(y.keys())[-1]] for x,y in sorted(clusters.nodes(data=True))]
+
+# ------- CHOSE THE CORRECT OPTION BASED ON THE EXPORTED FORMAT -------
+colors = [y[sorted(y.keys())[0]] for x,y in sorted(clusters.nodes(data=True))]
+colors = [y[sorted(y.keys())[0]] for x,y in clusters.nodes(data=True)]#
+colors
+```
+
+```{python}
+plt.cla()
+plt.scatter(noisy_circles[0][:, 0], noisy_circles[0][:, 1], c=colors)
+plt.show()
+
+file_name = "./result_circles.png"
+plt.savefig(file_name, bbox_inches='tight')
+
+plt.close('all')
+```
+
+
+# Generate All SNN Graphs
+```{r}
+datasets <- py$datasets
+l <- length(datasets)
+graphs <- list()
+
+for (i in 1:l)
+{
+  df <- as.data.frame(py$datasets[[i]][1])
+  rown <- dim(df)[1]
+  row.names(df) <- 1 : rown
+  mx = as.matrix(df)
+  snn = FindNeighbors(mx, k.param=10, annoy.metric = "euclidean", prune.SNN = 0)$snn
+  n = dim(snn)[1]
+  snn <- as.matrix(snn - diag(n))
+  graphs[[i]] <- snn
+}
+```
+
+# Save All SNN Graphs
+```{python}
+names = ["noisy_circles","noisy_moons", "varied", "aniso", "blobs", "no_structure"]
+graphs = r.graphs
+
+for i in range(len(names)):
+  
+  file_name = "./" + names[i] + ".png"
+  
+  plt.cla()
+  plt.scatter(datasets[i][0][:, 0], datasets[i][0][:, 1])
+  plt.show()
+  plt.savefig(file_name, bbox_inches='tight')
+  plt.close('all')
+```
+
+```{python}
+names = ["noisy_circles","noisy_moons", "varied", "aniso", "blobs", "no_structure"]
+graphs = r.graphs
+
+for i in range(len(names)):
+  file_name = "./graph_" + names[i] + ".gexf"
+  
+  G = nx.from_numpy_matrix(graphs[i])
+  nx.write_gexf(G, file_name)
+  
+  G = nx.read_gexf(file_name)
+  pos = nx.spring_layout(G)
+  plt.cla()
+  nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+  nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+  
+  file_name = "./graph_" + names[i] + ".png"
+  plt.savefig(file_name, bbox_inches='tight')
+```
+
+```{python}
+file_name = "/benchmarks/256_cqm_graph_snn_k5_dim15_g0005_trimmed_15benchmark_blobs.gexf"
+
+clusters = nx.read_gexf(''.join(["../../dataIn/", file_name]))
+
+# [y[sorted(y.keys())[-1]] for x,y in sorted(clusters.nodes(data=True))]
+
+# ------- CHOSE THE CORRECT OPTION BASED ON THE EXPORTED FORMAT -------
+# colors = [y[sorted(y.keys())[0]] for x,y in sorted(clusters.nodes(data=True))]
+colors = [y[sorted(y.keys())[1]] for x,y in clusters.nodes(data=True)]#
+colors
+```
+
+```{python}
+plt.cla()
+plt.scatter(blobs[0][:, 0], blobs[0][:, 1], c=colors)
+plt.show()
+
+file_name = "./result_blobs.png"
+plt.savefig(file_name, bbox_inches='tight')
+
+plt.close('all')
+```
+```{r}
+no_structure_100 <- py$no_structure
+df <- as.data.frame(py$no_structure[1])
+rown <- dim(df)[1]
+row.names(df) <- 1 : rown
+mx = as.matrix(df)
+snn = FindNeighbors(mx, k.param=10, annoy.metric = "euclidean", prune.SNN = 0)$snn
+n = dim(snn)[1]
+snn <- snn - diag(n)
+```
+
+```{python}
+import networkx as nx
+
+file_name = "./100_no_structure.gexf"
+
+G = nx.from_numpy_matrix(r.snn)
+nx.write_gexf(G, file_name)
+
+G = nx.read_gexf(file_name)
+pos = nx.spring_layout(G)
+plt.cla()
+nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+file_name = "./100_no_structure.png"
+plt.savefig(file_name, bbox_inches='tight')
+```
+
+```{python}
+file_name = "/benchmarks/256_graph_snn_k5_dim15_gf005_trimmed_15benchmark_100_no_structure_out.gexf"
+
+clusters = nx.read_gexf(''.join(["../../dataIn/", file_name]))
+
+# [y[sorted(y.keys())[-1]] for x,y in sorted(clusters.nodes(data=True))]
+
+# ------- CHOSE THE CORRECT OPTION BASED ON THE EXPORTED FORMAT -------
+# colors = [y[sorted(y.keys())[0]] for x,y in sorted(clusters.nodes(data=True))]
+colors = [y[sorted(y.keys())[1]] for x,y in clusters.nodes(data=True)]#
+colors
+```
+
+```{python}
+plt.cla()
+plt.scatter(r.no_structure_100[0][:, 0], r.no_structure_100[0][:, 1], c="black")
+plt.show()
+
+file_name = "./result_no_structure.png"
+plt.savefig(file_name, bbox_inches='tight')
+
+plt.close('all')
+```

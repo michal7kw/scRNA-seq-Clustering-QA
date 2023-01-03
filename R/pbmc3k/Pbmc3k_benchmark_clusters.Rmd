@@ -1,0 +1,117 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Libraries
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(bspec)
+library(sctransform)
+library(cowplot)
+library(gridExtra)
+library(dplyr)
+library(patchwork)
+library(sctransform)
+library(glmGamPoi)
+library(philentropy)
+library(proxy)
+```
+
+# Benchmarking (files' prefix: "")
+takes Seurat object:    pbmc3k_QA (from "Pbmc3k_assess_QA_clusters" notebook)
+## Within Cluster Average Distance
+```{r}
+# ------- Average Distance QA Clusters -------
+pbmc3k_QA <- cc_pbmc3k_QA
+
+clusters_idexes <- as.list(unique(pbmc3k_QA$QA))
+
+N <- length(unique(pbmc3k_QA[["QA"]][,1]))
+pbmc3k_QA_cluster <- vector("list", N)
+
+for (i in clusters_idexes){
+  pbmc3k_QA_cluster[[i+1]] <- mean(proxy::dist(pbmc3k_QA[,which(pbmc3k_QA[["QA"]] == i)]@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard", upper = TRUE, diag = TRUE, by_rows = TRUE))
+}
+```
+
+```{r}
+# ------- Average Distance Seurat Clusters -------
+N <- length(unique(pbmc3k_QA[["seurat_clusters"]][,1]))
+pbmc3k_Classic_cluster <- vector("list", N)
+
+for (i in 0:(N-1)){
+ # pbmc3k_Classic_cluster[[i+1]] <- mean(proxy::dist(pbmc3k_QA[,which(pbmc3k_QA[["seurat_clusters"]] == i)]@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard"))
+ pbmc3k_QA_cluster[[i+1]] <- mean(proxy::dist(pbmc3k_QA[,which(pbmc3k_QA[["seurat_clusters"]] == i)]@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard", upper = TRUE, diag = TRUE, by_rows = TRUE))
+}
+```
+
+```{r}
+# ------- do kmeans clustering -------
+km.out <- kmeans(pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, centers=9, nstart=5)
+pbmc3k_QA <- AddMetaData(pbmc3k_QA, metadata=km.out$cluster, col.name="kmeans")
+
+png(file="../../output/clusters_kmeans.png")
+DimPlot(pbmc3k_QA, reduction = "umap", group.by="kmeans") # + NoLegend()
+dev.off()
+
+DimPlot(pbmc3k_QA, reduction = "umap", group.by="kmeans") # + NoLegend()
+```
+
+```{r}
+# ------- Average Distance Kmeans Clusters -------
+N <- length(unique(pbmc3k_QA[["kmeans"]][,1]))
+pbmc3k_kmeans_cluster <- vector("list", N)
+
+for (i in 1:N){
+ # pbmc3k_kmeans_cluster[[i]] <- mean(distance(pbmc3k_QA[,which(pbmc3k_QA[["kmeans"]] == i)]@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard"))
+  pbmc3k_QA_cluster[[i+1]] <- mean(proxy::dist(pbmc3k_QA[,which(pbmc3k_QA[["kmeans"]] == i)]@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard", upper = TRUE, diag = TRUE, by_rows = TRUE))
+}
+```
+
+```{r}
+matrix(c(sort(unlist(pbmc3k_kmeans_cluster), decreasing = FALSE), sort(unlist(pbmc3k_QA_cluster), decreasing = FALSE), sort(unlist(pbmc3k_Classic_cluster), decreasing = FALSE)), ncol = 3)
+```
+
+## Average silhouette width (the higher the better)
+```{r}
+library(cluster)
+# silhouette_results_kmeans <- silhouette(pbmc3k_QA[["kmeans"]][,1], distance(pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard"))
+silhouette_results_kmeans <- silhouette(pbmc3k_QA[["kmeans"]][,1], proxy::dist(pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard", upper = TRUE, diag = TRUE, by_rows = TRUE))
+silhouette_sum_kmeans <- sum(silhouette_results_kmeans[,"sil_width"])
+
+# silhouette_results_QA <- silhouette(pbmc3k_QA[["QA"]][,1], distance(pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard"))
+silhouette_results_QA <- silhouette(pbmc3k_QA[["QA"]][,1], proxy::dist(pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard", upper = TRUE, diag = TRUE, by_rows = TRUE))
+silhouette_sum_QA <- sum(silhouette_results_QA[,"sil_width"])
+
+# silhouette_results_seurat <- silhouette(as.numeric(as.vector(pbmc3k_QA[["seurat_clusters"]][,1])), distance(pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard"))
+silhouette_results_seurat <- silhouette(as.numeric(as.vector(pbmc3k_QA[["seurat_clusters"]][,1])), proxy::dist(pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard", upper = TRUE, diag = TRUE, by_rows = TRUE))
+silhouette_sum_seurat <- sum(silhouette_results_seurat[,"sil_width"])
+
+c(silhouette_sum_kmeans, silhouette_sum_QA, silhouette_sum_seurat)
+```
+
+## fpc library statistics
+```{r}
+library("fpc")
+# QA_stats <- cluster.stats(distance(pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard"), pbmc3k_QA[["QA"]][,1])
+QA_stats <- cluster.stats(proxy::dist(pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard", upper = TRUE, diag = TRUE, by_rows = TRUE), pbmc3k_QA[["QA"]][,1])
+lapply(QA_stats, function(x) write.table( data.frame(x), './QA_benchmark.csv'  , append= T, sep=',' ))
+```
+
+```{r}
+# Seurat_stats <- cluster.stats(distance(pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard"), as.numeric(pbmc3k_QA[["seurat_clusters"]][,1]))
+Seurat_stats <- cluster.stats(proxy::dist(pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard", upper = TRUE, diag = TRUE, by_rows = TRUE), as.numeric(pbmc3k_QA[["seurat_clusters"]][,1]))
+lapply(Seurat_stats, function(x) write.table( data.frame(x), './Seurat_benchmark.csv'  , append= T, sep=',' ))
+```
+
+```{r}
+Kmeans_stats <- cluster.stats(proxy::dist(pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, method = "jaccard", upper = TRUE, diag = TRUE, by_rows = TRUE), pbmc3k_QA[["kmeans"]][,1])
+lapply(Kmeans_stats, function(x) write.table( data.frame(x), './Kmeans_benchmark.csv'  , append= T, sep=',' ))
+```
+
+
+
+

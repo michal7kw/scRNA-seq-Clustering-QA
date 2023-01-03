@@ -1,0 +1,167 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Libraries
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(bspec)
+library(sctransform)
+library(cowplot)
+library(gridExtra)
+library(dplyr)
+library(patchwork)
+library(sctransform)
+library(glmGamPoi)
+```
+
+# Get clustered-pruned graph back from QA
+takes QA clustered graph:   QA_pruned_clustered
+takes Seurat object:        pbmc3k_QA_pd        (from "Data_subsampling" notebook, original graph)
+takes Seurat object:        pbmc3k_QA_pruned    (from "Data_subsampling" notebook, pruned graph)
+```{python}
+name_pruned_clustered = "239_cqm_graph_snn_k5_dim15_g0005_trimmed_15.gexf"
+QA_pruned_clustered = nx.read_gexf(''.join(["./dataIn/", name_pruned_clustered]))
+
+colors2 = [y[sorted(y.keys())[-1]] for x,y in QA_pruned_clustered.nodes(data=True)]
+```
+
+```{r}
+colors2 = py$colors2
+colors2 = unlist(colors2)
+leng = dim(GetAssayData(pbmc3k_QA_pd))[2]
+
+colors_vec <- integer(leng)
+colors_vec[!!pruned] <- colors2+2
+
+pbmc3k_QA_pd <- AddMetaData(pbmc3k_QA_pd, metadata=colors_vec, col.name="QA_pruning_clusters")
+pbmc3k_QA_pruned <- AddMetaData(pbmc3k_QA_pruned, metadata=colors2, col.name="QA_pruning_clusters")
+```
+
+# Check clustering performance with the pruned graphs
+```{r}
+pbmc3k_QA_pruned <- RunUMAP(pbmc3k_QA_pruned, dim=1:15)
+DimPlot(pbmc3k_QA_pruned, reduction = "umap", group.by="QA_pruning_clusters", label = TRUE)
+```
+
+```{r}
+pbmc3k_QA_pruned <- FindClusters(pbmc3k_QA_pruned, verbose = FALSE, resolution = 0.8, algorithm = 1)
+DimPlot(pbmc3k_QA_pruned, reduction = "umap", group.by="seurat_clusters", label = TRUE)
+```
+
+# Check clustering performance with the original graphs
+```{r}
+pbmc3k_QA_pd <- RunUMAP(pbmc3k_QA_pd, dim=1:15)
+DimPlot(pbmc3k_QA, cells=!!pruned, reduction = "umap", group.by="QA_pruning_clusters", label = TRUE)
+```
+
+```{r}
+pbmc3k_QA_pd <- FindClusters(pbmc3k_QA_pd, verbose = FALSE, resolution = 0.8, algorithm = 1)
+DimPlot(pbmc3k_QA_pd, cells=!!pruned, reduction = "umap", group.by="seurat_clusters", label = TRUE)
+```
+
+```{r}
+DimPlot(pbmc3k_QA_pd, reduction = "umap", group.by="seurat_clusters", label = TRUE)
+```
+
+
+## Generate SNN Graph (second version)
+takes Seurat object: takes rc_pbmc3k with 2700 cells (from "Assess_QA_clusters" notebook) 
+```{r}
+n = ncol(rc_pbmc3k)
+dim(rc_pbmc3k)
+
+type = c("_", "_trimmed_", "_negedges_", "_trimmed_negedges_")
+id_type = 2
+dim = 15
+k = 5
+coff = 0 #1/15
+ord = 15
+
+rc_pbmc3k <- FindNeighbors(rc_pbmc3k, reduction = "ref.spca", dims = 1:dim, k.param=k, compute.SNN=TRUE) #prune.SNN=coff
+
+rc_pbmc3k_snn <- rc_pbmc3k@graphs[["SCT_snn"]]
+
+dim(rc_pbmc3k_snn)
+rc_pbmc3k_snn_temp <- rc_pbmc3k_snn
+rc_pbmc3k_snn <- rc_pbmc3k_snn_temp - diag(n)
+remove(rc_pbmc3k_snn_temp)
+
+for (i in 1:n){
+  to_delete <- order(rc_pbmc3k_snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+  rc_pbmc3k_snn[,i][to_delete] <- integer(n-ord)
+  rc_pbmc3k_snn[i,][to_delete] <- integer(n-ord)
+}
+```
+
+```{r setup}
+library(reticulate)
+virtualenv_create("scrna_proj")
+# py_install(c("networkx","matplotlib"), envname = "scrna_proj")
+use_virtualenv("scrna_proj")
+```
+
+```{python}
+import numpy as np
+import networkx as nx
+from matplotlib import pyplot as plt
+
+id_type, type = int(r.id_type)-1, r.type
+n = int(r.n)
+k = int(r.k)
+ord = int(r.ord)
+dim = int(r.dim)
+
+file_name = ''.join(["./graphs/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), "v2.gexf"])
+
+G = nx.from_numpy_matrix(r.rc_pbmc3k_snn)
+nx.write_gexf(G, file_name)
+
+G = nx.read_gexf(file_name)
+pos = nx.spring_layout(G)
+plt.cla()
+nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+file_name = ''.join(["./graphs/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), "v2.png"])
+plt.savefig(file_name, bbox_inches='tight')
+```
+
+```{python}
+import networkx as nx
+# QA_output_name = "1024_graph_snn_k5_dim15_gf0.05_trimmed_5_out.gexf"
+QA_output_name_v2 = "512_cqm_graph_snn_k5_dim15_g0005_trimmed_15v2.gexf"
+
+QA_clusters_v2 = nx.read_gexf(''.join(["./dataIn/", QA_output_name_v2]))
+
+# ------- CHOSE THE CORRECT OPTION BASED ON THE EXPORTED FORMAT -------
+colors_v2 = [y[sorted(y.keys())[-1]] for x,y in sorted(QA_clusters_v2.nodes(data=True))]
+colors_v2 = [y[sorted(y.keys())[-1]] for x,y in QA_clusters_v2.nodes(data=True)]
+```
+
+### Merge MetaData
+```{r}
+colors_v2 = py$colors_v2
+colors_v2 = unlist(colors_v2)
+rc_pbmc3k <- AddMetaData(rc_pbmc3k, metadata=colors_v2, col.name="QA")
+DimPlot(rc_pbmc3k, reduction = "pca", group.by="QA")
+```
+
+```{r}
+rc_pbmc3k <- FindClusters(rc_pbmc3k, verbose = FALSE, resolution = 0.8, algorithm = 1)
+rc_pbmc3k <- RunUMAP(rc_pbmc3k, dim=1:15)
+
+png(file="./output/clusters_QAv2.png")
+DimPlot(rc_pbmc3k, reduction = "umap", group.by="QA") # + NoLegend()
+dev.off()
+
+png(file="./output/clusters_Clasic.png")
+DimPlot(rc_pbmc3k, reduction = "umap", group.by="seurat_clusters") # + NoLegend()
+dev.off()
+
+DimPlot(rc_pbmc3k, reduction = "umap", group.by="QA") # + NoLegend()
+DimPlot(rc_pbmc3k, reduction = "ref.umap", group.by="seurat_clusters") # + NoLegend()
+```

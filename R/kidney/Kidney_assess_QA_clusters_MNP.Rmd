@@ -1,0 +1,215 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+---
+title: "R Notebook"
+output: html_notebook
+---
+takes QA clustered graph:   QA_clusters
+takes Seurat object:        selected_a              (from "Kidney_data" notebook, original graph)
+takes Seurat object:        selected_a_2            (from "Kidney_data" notebook, original graph)
+input data:                 ../../dataIn/kidney/MNP/    copied from   ./graphs_multi_samples/
+output data:                ../../output/   and   ../../output/multi_eng/
+# Libraries
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(bspec)
+library(sctransform)
+library(cowplot)
+library(gridExtra)
+library(dplyr)
+library(patchwork)
+library(sctransform)
+library(glmGamPoi)
+```
+
+# Compare clusters
+## Import QA clusters (only the first sample)
+```{r setup}
+library(reticulate)
+virtualenv_create("scrna_proj")
+# py_install(c("networkx","matplotlib"), envname = "scrna_proj")
+use_virtualenv("scrna_proj")
+```
+
+```{python}
+import networkx as nx
+
+dataset = "MNP/"
+ex_number = "1"
+QA_output_name = "sample_number" + ex_number + ".gexf"
+QA_clusters = nx.read_gexf(''.join(["../../dataIn/kidney/", dataset, QA_output_name]))
+
+# ------- CHOSE THE CORRECT OPTION BASED ON THE EXPORTED FORMAT -------
+# colors = [y[sorted(y.keys())[-1]] for x,y in sorted(QA_clusters.nodes(data=True))]
+colors = [y[sorted(y.keys())[-1]] for x,y in QA_clusters.nodes(data=True)]
+len(colors)
+```
+
+## Merge Clusters MetaData
+```{r}
+ex_number <- py$ex_number
+
+my_cols <- c('#003366','#00cc99','#cc9900','#ff0066','#6699ff','#E6C122','#000195','#B95FBB','#28CECA','#ff9a36'
+             ,'#2FF18B','#aeadb3','#CCB1F1','#D4D915','#A4DFF2','#4B4BF7')
+
+colors = py$colors
+colors = unlist(colors)
+selected_a <- AddMetaData(selected_a, metadata=colors, col.name="QA")
+DimPlot(selected_a, reduction = "pca", group.by="QA", cols=my_cols[1:5]) + NoLegend()
+```
+
+```{r}
+colors = py$colors
+colors = unlist(colors)
+selected_a_2<- AddMetaData(selected_a_2, metadata=colors, col.name="QA")
+
+DimPlot(selected_a_2, reduction = "pca", group.by="QA", cols=my_cols[1:5], raster.dpi = c(512, 512)) + NoLegend()
+# ggsave(paste("../../output/PCA.png"), width = 5, height = 5) 
+```
+
+```{r}
+png(file= paste("../../output/selected_a_seurat", ex_number, ".png"))
+DimPlot(selected_a, reduction = "umap", group.by="seurat_clusters") # + NoLegend()
+dev.off()
+
+png(file=paste("../../output/selected_a_QA", ex_number, ".png"))
+DimPlot(selected_a, reduction = "umap", group.by="QA") # + NoLegend()
+dev.off()
+
+png(file=paste("../../output/selected_a_celltypes", ex_number, ".png"))
+DimPlot(selected_a, reduction = "umap", group.by="celltype") # + NoLegend()
+dev.off()
+
+# par(mfrow = c(1, 2))
+DimPlot(selected_a, reduction = "umap", group.by="QA", cols=my_cols[1:5]) # + NoLegend()
+DimPlot(selected_a, reduction = "umap", group.by="seurat_clusters") # + NoLegend()
+DimPlot(selected_a, reduction = "umap", group.by="celltype", cols=my_cols[1:5]) # + NoLegend()
+```
+
+```{r}
+png(file=paste("../../output/selected_a_2_seurat", ex_number, ".png"))
+DimPlot(selected_a_2, reduction = "umap", group.by="seurat_clusters") # + NoLegend()
+dev.off()
+
+png(file=paste("../../output/selected_a_2_QA", ex_number, ".png"))
+DimPlot(selected_a_2, reduction = "umap", group.by="QA") # + NoLegend()
+dev.off()
+
+png(file=paste("../../output/selected_a_2_celltypes", ex_number, ".png"))
+DimPlot(selected_a_2, reduction = "umap", group.by="celltype") # + NoLegend()
+dev.off()
+
+# par(mfrow = c(1, 2))
+DimPlot(selected_a_2, reduction = "umap", group.by="QA", cols=my_cols[1:5]) # + NoLegend()
+DimPlot(selected_a_2, reduction = "umap", group.by="seurat_clusters") # + NoLegend()
+DimPlot(selected_a_2, reduction = "umap", group.by="celltype", cols=my_cols[1:5]) # + NoLegend()
+```
+
+
+## Plot UMAP for Multiple Energies
+```{python}
+colors = []
+for i in range(0,15):
+  ex_number = str(i)
+  QA_output_name = "sample_number" + ex_number + ".gexf"
+  QA_clusters = nx.read_gexf(''.join(["../../dataIn/kidney/", dataset, QA_output_name]))
+  color = [y[sorted(y.keys())[-1]] for x,y in QA_clusters.nodes(data=True)]
+  colors.append(color)
+
+```
+
+```{r}
+colors <- py$colors
+graph_colors <- my_cols[1:5]
+graph_colors_ord <- graph_colors
+size <- length(unlist(colors[1]))
+fig_size <- 5
+
+for (i in c(1:15)) {
+  print(i)
+  color <- colors[i]
+  color <- unlist(color)
+  color <- color + 1
+  
+  ord <- order(table(color), decreasing = TRUE)
+  color_new <- color
+  for (j in c(1:size)){
+    color_new[j] <- switch(color[j], which(ord==1), which(ord==2), which(ord==3), which(ord==4), which(ord==5))
+  }
+  
+  selected_a_2 <- AddMetaData(selected_a_2, metadata=color_new, col.name="QA")
+  
+  DimPlot(selected_a_2, reduction = "umap", group.by="QA", cols=graph_colors) + NoLegend()
+  ggsave(paste("../../output/multi_eng/selected_a_2_QA_", as.character(i), ".png", sep = ""), width = fig_size, height = fig_size)
+}
+
+color = as.numeric(selected_a_2$seurat_clusters)
+ord <- order(table(color), decreasing = TRUE)
+color_new <- color
+for (j in c(1:size)){
+  color_new[j] <- switch(color[j], which(ord==1), which(ord==2), which(ord==3), which(ord==4), which(ord==5))
+}
+selected_a_2 <- AddMetaData(selected_a_2, metadata=color_new, col.name="seurat_clusters")
+DimPlot(selected_a_2, reduction = "umap", group.by="seurat_clusters", cols=graph_colors) # + NoLegend()
+ggsave(paste("../../output/multi_eng/selected_a_2_seurat.png"), width = fig_size, height = fig_size)
+
+cell_types = selected_a_2$celltype
+for (i in 1:size) {
+  color_new[i] <- switch(cell_types[i], "MNP-a/classical monocyte derived"=5, "MNP-b/non-classical monocyte derived"=1, "MNP-d/Tissue macrophage"=3, "MNP-c/dendritic cell"=2, "Neutrophil"=4)
+}
+selected_a_2 <- AddMetaData(selected_a_2, metadata=color_new, col.name="Cell_types_ground_truth")
+DimPlot(selected_a_2, reduction = "umap", group.by="Cell_types_ground_truth", cols=graph_colors) # + NoLegend() #, raster.dpi=c()
+ggsave(paste("../../output/multi_eng/selected_a_2_celltypes.png"), width = 5, height = 5)
+```
+
+```{r}
+MyLabb <- c("MNP-a/classical monocyte derived", "MNP-b/non-classical monocyte derived", "MNP-d/Tissue macrophage", "MNP-c/dendritic cell", "Neutrophil")
+MyLab <- c(MyLabb[1], MyLabb[5], MyLabb[2], MyLabb[3], MyLabb[4])
+  
+data <- data.frame(x = 1:5,                        # Create example data
+                   y = 1:5)
+                        
+library("ggplot2")     
+library("grid")                     
+library("gridExtra")        
+library("cowplot")
+png("../../output/multi_eng/legend.png",width = 1500, height = 100, pointsize=30)
+ggp <- ggplot(data, aes(x, y, color = MyLab)) + labs(colour =" ") +
+  geom_point(size = 10) + scale_color_manual(labels = MyLab, values=graph_colors_2) + guides(colour = guide_legend(nrow = 2)) + theme_bw() +
+  theme(legend.text=element_text(size=rel(2)))
+ggp
+ggp_legend <- get_legend(ggp)
+grid.newpage()                                     # Draw empty plot window
+grid.draw(ggp_legend)
+dev.off()
+```
+## Plot only selected sample
+
+```{r}
+i = 8
+print(i)
+color <- colors[i]
+color <- unlist(color)
+color <- color + 1
+
+ord <- order(table(color), decreasing = TRUE)
+color_new <- color
+for (j in c(1:size)){
+  color_new[j] <- switch(color[j], which(ord==1), which(ord==2), which(ord==3), which(ord==4), which(ord==5))
+}
+
+selected_a_2 <- AddMetaData(selected_a_2, metadata=color_new, col.name="QA")
+
+graph_colors_2 <- graph_colors
+graph_colors_2[3] <- graph_colors[5]
+graph_colors_2[5] <- graph_colors[3]
+
+DimPlot(selected_a_2, reduction = "umap", group.by="QA", cols=graph_colors_2) + NoLegend()
+ggsave(paste("../../output/multi_eng/selected_a_2_QA_", as.character(i), ".png", sep = ""), width = fig_size, height = fig_size)
+```
+

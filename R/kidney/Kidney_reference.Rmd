@@ -1,0 +1,117 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(bspec)
+library(sctransform)
+library(cowplot)
+library(gridExtra)
+library(dplyr)
+library(patchwork)
+library(sctransform)
+library(glmGamPoi)
+library(SeuratDisk)
+library("parallel")
+```
+# Whole Dataset
+kidney - whole dataset, 10605 samples
+## Clean Data
+```{r}
+# ------- use previously created Seurat object -------
+kidney_ref <- readRDS(file = "../../data/ref.rds")
+dim(GetAssayData(kidney_ref))
+# kidney_ref <- RenameAssays(object = kidney_ref, refAssay = 'RNA')
+```
+
+```{r}
+library(Seurat)
+library(SeuratDisk)
+args <- commandArgs(trailingOnly = TRUE)
+
+args = c("../../data/ref.rds", "../../data/ref.rds")
+
+ref <- readRDS(file = args[1])
+fullref <- readRDS(file = args[2])
+fullref <- subset(x = fullref, cells = Cells(x = ref))
+fullref[['umap']] <- ref[['refUMAP']]
+Key(object = fullref[['umap']]) <- "umap_"
+DefaultAssay(object = fullref[['umap']]) <- "RNA"
+
+DefaultAssay(object = fullref) <- "RNA"
+fullref <- NormalizeData(object = fullref)
+fullref <- DietSeurat(
+  object = fullref,
+  dimreducs = "umap",
+  assays = "RNA"
+)
+for (i in colnames(x = fullref[[]])) {
+  fullref[[i]] <- NULL
+}
+fullref <- AddMetaData(object = fullref, metadata = ref[[]])
+Misc(object = fullref[['umap']], slot = "model") <- NULL
+
+fullref <- RenameCells(object = fullref, new.names = paste0("cell", 1:ncol(x = fullref)))
+
+for (i in colnames(x = fullref[[]])) {
+  if (is.factor(x = fullref[[i, drop = TRUE]])) {
+    fullref[[i]] <- as.character(x = fullref[[i, drop = TRUE]])
+  }
+}
+
+SaveH5Seurat(object = fullref, file = args[3], overwrite = TRUE)
+Convert(args[3], dest = "h5ad", overwrite = TRUE)
+```
+
+
+```{r}
+sum(colSums(kidney_ref$nCount_refAssay != 0) == 0)
+```
+
+
+```{r}
+DimPlot(kidney_ref, reduction = "refUMAP", group.by = "annotation.l3", repel = TRUE, label = TRUE, label.size = 3) + NoLegend()
+```
+
+```{r}
+sort(unique(kidney_ref$annotation.l3))
+length(unique(kidney_ref$annotation.l3))
+```
+
+
+```{r}
+to_select <- c("Ascending Thin Limb", "Descending Thin Limb Type 3", "Descending Thin Limb Type 2", "Descending Thin Limb Type 1")
+selected_meta <- is.element(kidney_ref$annotation.l3, to_select)
+kidney_ref <- AddMetaData(kidney_ref, metadata=selected_meta, col.name="set_A")
+set_A <- subset(x = kidney_ref, subset = set_A == TRUE)
+ncol(set_A)
+```
+
+```{r}
+DimPlot(set_A, reduction = "refUMAP", group.by = "annotation.l3", repel = TRUE, label = TRUE, label.size = 3) + NoLegend()
+```
+
+```{r}
+kidney_ref@assays$refAssay@SCTModel.list
+```
+
+```{r}
+kidney_ref@assays$RNA@counts <- GetAssayData(set_A) 
+
+set_A <- NormalizeData(set_A)
+set_A <- ScaleData(set_A)
+
+kidney_ref <- FindVariableFeatures(kidney_ref)
+
+kidney_ref <- RunPCA(kidney_ref, features = VariableFeatures(object = kidney_ref))
+
+DimPlot(set_A, reduction = "pca", group.by="annotation.l3") + NoLegend()
+set_A <- RunUMAP(set_A, dims = 1:30, verbose = FALSE)
+set_A <- FindNeighbors(set_A, dims = 1:30, verbose = FALSE)
+set_A <- FindClusters(set_A, resolution = 0.1, verbose = FALSE)
+```
+

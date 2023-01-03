@@ -1,0 +1,412 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+takes QA clustered graph:   QA_pruned_clustered
+takes Seurat object:        selected_b              (from "Data_subsampling" notebook, original graph)
+takes Seurat object:        selected_b_2            (from "Data_subsampling" notebook, original graph)
+takes Seurat object:        selected_b_2_pruned     (from "Data_subsampling" notebook, pruned graph)
+# Libraries
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(bspec)
+library(sctransform)
+library(cowplot)
+library(gridExtra)
+library(dplyr)
+library(patchwork)
+library(sctransform)
+library(glmGamPoi)
+library(philentropy)
+library(proxy)
+library(cluster)
+library(Rfast)
+```
+
+# Get clustered-pruned graph back from QA
+```{r setup}
+library(reticulate)
+virtualenv_create("scrna_proj")
+# py_install(c("networkx","matplotlib"), envname = "scrna_proj")
+use_virtualenv("scrna_proj")
+```
+
+```{python}
+import numpy as np
+import networkx as nx
+from matplotlib import pyplot as plt
+```
+
+```{python}
+name_pruned_clustered = "964_nodes_pruned/sample_number1.gexf"
+QA_pruned_clustered = nx.read_gexf(''.join(["../../dataIn/kidney/Archive/", name_pruned_clustered]))
+QA_pruned_clustered = nx.read_gexf(''.join(["../../graphs_multi_samples/", "sample_number0.gexf"]))
+
+colors2 = [y[sorted(y.keys())[-1]] for x,y in QA_pruned_clustered.nodes(data=True)]
+```
+
+```{r}
+colors2 = py$colors2
+colors2 = unlist(colors2)
+leng = dim(GetAssayData(selected_b_2))[2]
+
+colors_vec <- integer(leng)
+colors_vec[!!pruned] <- colors2+2
+
+selected_b <- AddMetaData(selected_b, metadata=colors_vec, col.name="QA_pruning_clusters")
+selected_b_2 <- AddMetaData(selected_b_2, metadata=colors_vec, col.name="QA_pruning_clusters")
+selected_b_2_pruned <- AddMetaData(selected_b_2_pruned, metadata=colors2, col.name="QA_pruning_clusters")
+```
+
+# Check clustering performance with the pruned graphs
+```{r, eval=FALSE}
+# DimPlot(selected_b_2_pruned, label = TRUE, label.size = 3, group.by="seurat_clusters") #+ NoLegend()
+DimPlot(selected_b_2_pruned, group.by="celltype",repel = TRUE, label = TRUE, label.size = 3) #+ NoLegend()
+DimPlot(selected_b_2_pruned, reduction = "umap", group.by="QA_pruning_clusters", label = TRUE)
+```
+
+```{r, eval=FALSE}
+selected_2_pruned_new_umap <- RunUMAP(selected_b_2_pruned, dim=1:15)
+DimPlot(selected_2_pruned_new_umap, group.by="celltype",repel = TRUE, label = TRUE, label.size = 3) #+ NoLegend()
+DimPlot(selected_2_pruned_new_umap, reduction = "umap", group.by="QA_pruning_clusters", label = TRUE)
+```
+
+```{r, eval=FALSE}
+selected_2_pruned_new_umap <- FindClusters(selected_2_pruned_new_umap, verbose = FALSE, resolution = 0.35, algorithm = 1)
+DimPlot(selected_2_pruned_new_umap, reduction = "umap", group.by="seurat_clusters", label = TRUE)
+```
+
+```{r}
+# ------- do kmeans clustering -------
+km.out <- kmeans(selected_b_2_pruned@assays$SCT@data %>% as.matrix %>% t, centers=5, nstart=3)
+selected_b_2_pruned <- AddMetaData(selected_b_2_pruned, metadata=km.out$cluster, col.name="kmeans")
+```
+
+```{r}
+my_cols <- c('#003366','#00cc99','#cc9900','#ff0066','#6699ff','#E6C122','#000195','#B95FBB','#28CECA','#ff9a36'
+             ,'#2FF18B','#aeadb3','#CCB1F1','#D4D915','#A4DFF2','#4B4BF7')
+
+DimPlot(selected_b_2_pruned, reduction = "umap", group.by="kmeans", cols=my_cols[1:5]) # + NoLegend()
+DimPlot(selected_b_2_pruned, reduction = "umap", group.by="QA_pruning_clusters", cols=my_cols[1:5]) # + NoLegend()
+DimPlot(selected_b_2_pruned, reduction = "umap", group.by="seurat_clusters", cols=my_cols[1:5]) # + NoLegend()
+DimPlot(selected_b_2_pruned, group.by="celltype",repel = TRUE, label = TRUE, label.size = 3) #+ NoLegend()
+```
+
+# Benchmarks
+## Index
+### 1.Active Single
+```{r}
+library(fossil)
+
+cell_type <- selected_b_2_pruned[["celltype"]][,1]
+cell_kmeans <- selected_b_2_pruned[["kmeans"]][,1]
+cell_qa <- selected_b_2_pruned[["QA_pruning_clusters"]][,1] + 1
+cell_seurat <- as.numeric(as.vector(selected_b_2_pruned[["seurat_clusters"]][,1])) + 1
+
+sort(table(cell_type))
+sort(table(cell_kmeans))
+sort(table(cell_qa))
+sort(table(cell_seurat))
+kmeans_order <- as.numeric(order(table(cell_kmeans)))
+qa_order <- as.numeric(order(table(cell_qa)))
+seurat_order <- as.numeric(order(table(cell_seurat)))
+```
+
+```{r}
+cell_type <- selected_b_2_pruned[["celltype"]][,1]
+size <- length(cell_type)
+tcell_type <- vector(mode="character", length=size)
+
+for (i in 1:size) {
+  tcell_type[i] <- switch(cell_type[i], "Mast cell"=1, "CD8 T cell"=2, "NKT cell"=3, "NK cell"=4, "CD4 T cell"=5)
+}
+tcell_type <- as.numeric(tcell_type)
+sort(table(tcell_type))
+```
+
+```{r}
+size <- length(cell_type)
+tcell_kmeans <- vector(mode="numeric", length=size)
+tcell_qa <- vector(mode="numeric", length=size)
+tcell_seurat <- vector(mode="numeric", length=size)
+
+for (i in 1:size) {
+  tcell_kmeans[i] <- switch(cell_kmeans[i], kmeans_order[1], kmeans_order[2], kmeans_order[3], kmeans_order[4], kmeans_order[5])
+  tcell_qa[i]     <- switch(cell_qa[i], qa_order[1], qa_order[2], qa_order[3], qa_order[4], qa_order[5])
+  tcell_seurat[i] <- switch(cell_seurat[i], seurat_order[1], seurat_order[2], seurat_order[3], seurat_order[4], seurat_order[5])
+}
+```
+
+```{r}
+rand.index(tcell_type, tcell_type)
+adj.rand.index(tcell_type, tcell_type)
+
+rand.index(tcell_kmeans, tcell_type)
+adj.rand.index(tcell_kmeans, tcell_type)
+
+rand.index(tcell_qa, tcell_type)
+adj.rand.index(tcell_qa, tcell_type)
+
+rand.index(tcell_seurat, tcell_type)
+adj.rand.index(tcell_seurat, tcell_type)
+```
+### 1.Active Multi
+```{python}
+colors = []
+for i in range(0,15):
+  print(i)
+  ex_number = str(i)
+  QA_output_name = "sample_number" + ex_number + ".gexf"
+  # name_pruned_clustered = "964_nodes_pruned/sample_number1.gexf"
+  QA_clusters = nx.read_gexf(''.join(["../../dataIn/kidney/bench_3/first_3/", QA_output_name]))
+  # QA_clusters = nx.read_gexf(''.join(["../../graphs_multi_samples/", QA_output_name]))
+  # QA_pruned_clustered = nx.read_gexf(''.join(["../../dataIn/kidney/", name_pruned_clustered]))
+  color = [y[sorted(y.keys())[-1]] for x,y in QA_clusters.nodes(data=True)]
+  colors.append(color)
+```
+
+```{r}
+colors <- py$colors
+
+ref_rand <- c()
+ref_adj_rand <- c()
+km_rand <- c()
+km_adj_rand <- c()
+qa_rand <- c()
+qa_adj_rand <- c()
+seu_rand <- c()
+seu_adj_rand <- c()
+
+kmean_data <- selected_b_2_pruned@assays$SCT@data %>% as.matrix %>% t
+
+for (i in c(1:15)) {
+  print(i)
+  color <- colors[i]
+  color <- unlist(color)
+  selected_b_2_pruned <- AddMetaData(selected_b_2_pruned, metadata=color, col.name="QA")
+  km.out <- kmeans(kmean_data, centers=5, nstart=1)
+  selected_b_2_pruned <- AddMetaData(selected_b_2_pruned, metadata=km.out$cluster, col.name="kmeans")
+  
+  cell_kmeans <- selected_b_2_pruned[["kmeans"]][,1]
+  cell_qa <- selected_b_2_pruned[["QA"]][,1] + 1
+  
+  kmeans_order <- as.numeric(order(table(cell_kmeans)))
+  qa_order <- as.numeric(order(table(cell_qa)))
+  
+  size <- length(cell_type)
+  tcell_kmeans <- vector(mode="numeric", length=size)
+  tcell_qa <- vector(mode="numeric", length=size)
+  tcell_seurat <- vector(mode="numeric", length=size)
+  
+  for (i in 1:size) {
+    tcell_kmeans[i] <- switch(cell_kmeans[i], kmeans_order[1], kmeans_order[2], kmeans_order[3], kmeans_order[4], kmeans_order[5])
+    tcell_qa[i]     <- switch(cell_qa[i], qa_order[1], qa_order[2], qa_order[3], qa_order[4], qa_order[5])
+    tcell_seurat[i] <- switch(cell_seurat[i], seurat_order[1], seurat_order[2], seurat_order[3], seurat_order[4], seurat_order[5])
+  }
+  
+  ref_rand <- c(ref_rand, rand.index(tcell_type, tcell_type))
+  # ref_adj_rand <- c(ref_adj_rand, adj.rand.index(tcell_type, tcell_type))
+  
+  km_rand <- c(km_rand, rand.index(tcell_kmeans, tcell_type))
+  # km_adj_rand <- c(km_adj_rand, adj.rand.index(tcell_kmeans, tcell_type))
+  
+  qa_rand <- c(qa_rand, rand.index(tcell_qa, tcell_type))
+  # qa_adj_rand <- c(qa_adj_rand, adj.rand.index(tcell_qa, tcell_type))
+  
+  seu_rand <- c(seu_rand, rand.index(tcell_seurat, tcell_type))
+  # seu_adj_rand <- c(seu_adj_rand, adj.rand.index(tcell_seurat, tcell_type))
+  
+}
+
+clipr::write_clip(ref_rand)
+clipr::write_clip(qa_rand)
+clipr::write_clip(km_rand)
+clipr::write_clip(seu_rand)
+# 
+# clipr::write_clip(ref_adj_rand)
+# clipr::write_clip(km_adj_rand)
+# clipr::write_clip(qa_adj_rand)
+# clipr::write_clip(seu_adj_rand)
+
+max_index_qa <- max(qa_rand)
+clipr::write_clip(max_index_qa)
+```
+
+```{r}
+kmeans_data <- selected_b_2_pruned@assays$SCT@data %>% as.matrix %>% t
+size <- length(cell_type)
+
+km_index_count <- c()
+
+for (i in 1:1) {
+  km_index <- 0
+  km_index_list <- c()
+  iter <- 0
+
+  print(i)
+  
+  while (km_index < max_index_qa && iter < 1000) {
+    iter <- iter + 1
+    print(iter)
+    
+    km.out <- kmeans(kmeans_data, centers=5, nstart=1)
+    selected_b_2_pruned <- AddMetaData(selected_b_2_pruned, metadata=km.out$cluster, col.name="kmeans")
+    
+    cell_kmeans <- selected_b_2_pruned[["kmeans"]][,1]
+    kmeans_order <- as.numeric(order(table(cell_kmeans)))
+    tcell_kmeans <- vector(mode="numeric", length=size)
+    
+    for (i in 1:size) {
+      tcell_kmeans[i] <- switch(cell_kmeans[i], kmeans_order[1], kmeans_order[2], kmeans_order[3], kmeans_order[4], kmeans_order[5])
+    }
+    
+    km_index <- rand.index(tcell_kmeans, tcell_type)
+    km_index_list <- c(km_index_list, km_index)
+
+  }
+  write.csv(km_index_list,file=paste('./kmean_index_stats_2/', as.character(i),'.csv'),row.names=F)
+  km_index_count <- c(km_index_count, iter)
+}
+
+clipr::write_clip(km_index_count)
+```
+
+
+## 2.Silhouette
+### 2.Active Multi
+```{python}
+colors = []
+for i in range(0,15):
+  print(i)
+  ex_number = str(i)
+  QA_output_name = "sample_number" + ex_number + ".gexf"
+  QA_clusters = nx.read_gexf(''.join(["../../dataIn/kidney/bench_3/first_4/", QA_output_name]))
+  # QA_clusters = nx.read_gexf(''.join(["../../graphs_multi_samples/", QA_output_name]))
+  color = [y[sorted(y.keys())[-1]] for x,y in QA_clusters.nodes(data=True)]
+  colors.append(color)
+```
+
+```{r}
+sc_dist_fast <- Dist(selected_b_2_pruned@assays$SCT@data %>% as.matrix %>% t)
+
+colors <- py$colors
+res_qa <- c()
+
+for (i in 1:15) {
+  print(i)
+  color <- colors[i]
+  color <- unlist(color)
+  selected_b_2_pruned <- AddMetaData(selected_b_2_pruned, metadata=color, col.name="QA")
+  df_silhouette_results_QA <- silhouette(selected_b_2_pruned[["QA"]][,1], sc_dist_fast)
+  res_qa <- c(res_qa, mean(df_silhouette_results_QA[,3]))
+}
+
+max_res_qa = max(res_qa)
+clipr::write_clip(max_res_qa)
+clipr::write_clip(res_qa)
+```
+
+```{r, eval=FALSE}
+kmeans_data <- selected_b_2_pruned@assays$SCT@data %>% as.matrix %>% t
+
+res_km <- c()
+
+for (i in 1:15) {
+  print(i)
+  km.out <- kmeans(kmeans_data, centers=5, nstart=1)
+  selected_b_2_pruned <- AddMetaData(selected_b_2_pruned, metadata=km.out$cluster, col.name="kmeans")
+  df_silhouette_results_kmeans <- silhouette(selected_b_2_pruned[["kmeans"]][,1], sc_dist_fast)
+  res_km <- c(res_km, mean(df_silhouette_results_kmeans[,3]))
+}
+
+clipr::write_clip(res_km)
+```
+
+```{r, eval=FALSE}
+res_se <- c()
+
+for (i in 1:15) {
+  print(i)
+  df_silhouette_results_seurat <- silhouette(as.numeric(as.vector(selected_b_2_pruned[["seurat_clusters"]][,1])), sc_dist_fast)
+  res_se <- c(res_se, mean(df_silhouette_results_seurat[,3]))
+}
+
+clipr::write_clip(res_se)
+```
+
+### 2.No-active
+```{r, eval=FALSE}
+
+colors = py$colors
+colors = unlist(colors)
+selected_a_2<- AddMetaData(selected_a_2, metadata=colors, col.name="QA")
+  
+pbmc3k_QA <- selected_a_2
+sc_dist_fast <- Dist(pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame)
+
+for (i in 1:3) {
+  km.out <- kmeans(pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t %>% as.data.frame, centers=5, nstart=3)
+  pbmc3k_QA <- AddMetaData(pbmc3k_QA, metadata=km.out$cluster, col.name="kmeans")
+  
+  # write.table(data.frame(QA_stats[i]), paste('./fpc/QA_benchmark', ex_number, '.csv'), append= T, sep=',')
+  # print(as.vector(names(QA_stats))[i])
+  
+  df_silhouette_results_kmeans <- silhouette(pbmc3k_QA[["kmeans"]][,1], sc_dist_fast)
+  df_silhouette_sum_kmeans <- sum(df_silhouette_results_kmeans[,"sil_width"])
+  summary(df_silhouette_results_kmeans)
+  
+  cat("\n")
+  
+  df_silhouette_results_QA <- silhouette(pbmc3k_QA[["QA"]][,1], sc_dist_fast)
+  df_silhouette_sum_QA <- sum(df_silhouette_results_QA[,"sil_width"])
+  summary(df_silhouette_results_QA)
+  
+  cat("\n")
+  
+  df_silhouette_results_seurat <- silhouette(as.numeric(as.vector(pbmc3k_QA[["seurat_clusters"]][,1])), sc_dist_fast)
+  df_silhouette_sum_seurat <- sum(df_silhouette_results_seurat[,"sil_width"])
+  summary(df_silhouette_results_seurat)
+  
+  cat("\n")
+  
+  c(df_silhouette_sum_kmeans, df_silhouette_sum_QA, df_silhouette_sum_seurat)
+}
+```
+
+## 3.Kmeans in loop to reach QA Seurat accuracy 
+```{r, eval=FALSE}
+################### Silhouette & rand index ###################
+res_km <- c()
+res_mkm <- c()
+iter <- 0
+meankmean <- 0
+kmeans_data <- pbmc3k_QA@assays$SCT@data %>% as.matrix %>% t
+
+for (i in 1:2) {
+  meankmean <- 0
+  iter <- 0
+  res_km <- 0
+  print(i)
+  while (meankmean < max_res_qa) {
+    iter <- iter + 1
+    print(iter)
+    km.out <- kmeans(kmeans_data, centers=5, nstart=1)
+    pbmc3k_QA <- AddMetaData(pbmc3k_QA, metadata=km.out$cluster, col.name="kmeans")
+    df_silhouette_results_kmeans <- silhouette(pbmc3k_QA[["kmeans"]][,1], sc_dist_fast)
+    meankmean <- mean(df_silhouette_results_kmeans[,3])
+    res_km <- c(res_km, meankmean)
+  }
+  # write.csv(res_km,file=paste('./kmean_stats/', as.character(i),'.csv'),row.names=F)
+  res_mkm <- c(res_mkm, iter)
+}
+
+# clipr::write_clip(res_km)
+clipr::write_clip(res_mkm)
+# print(iter)
+```
+
+```{r, eval=FALSE}
+hist(res_km, breaks=iter)
+```

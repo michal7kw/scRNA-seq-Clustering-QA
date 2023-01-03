@@ -1,0 +1,157 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Libraries
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(bspec)
+library(sctransform)
+library(cowplot)
+library(gridExtra)
+library(dplyr)
+library(patchwork)
+library(sctransform)
+library(glmGamPoi)
+```
+
+# Generate test set
+creates Seurat object:    pbmc3k_dataprep
+creates SNN graph:        pbmc3k_dataprep_snn
+## subsetting
+```{r}
+# pbmc3k <- readRDS(file = "data/pbmc_data/pbmc3k/pbmc3k_init.rds")
+
+# Load the PBMC dataset
+pbmc.data <- Read10X(data.dir = "../../data/pbmc_data/pbmc3k/filtered_gene_bc_matrices/hg19/")
+# Initialize the Seurat object with the raw (non-normalized data).
+pbmc3k <- CreateSeuratObject(counts = pbmc.data, project = "pbmc3k", min.cells = 3, min.features = 200)
+
+pbmc3k[["percent.mt"]] <- PercentageFeatureSet(pbmc3k, pattern = "^MT-")
+pbmc3k <- subset(pbmc3k, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+
+pbmc3k_dataprep <- pbmc3k
+pbmc3k_dataprep <- pbmc3k[,1:1024]
+
+pbmc3k_dataprep <- SCTransform(pbmc3k_dataprep, method = "glmGamPoi", vars.to.regress = "percent.mt", verbose = FALSE)
+pbmc3k_dataprep <- RunPCA(pbmc3k_dataprep, features = VariableFeatures(object = pbmc3k_dataprep))
+```
+
+## Neighbours evaluation, SNN
+```{r}
+n = ncol(pbmc3k_dataprep)
+dim(pbmc3k_dataprep)
+
+type = c("_", "_trimmed_", "_negedges_", "_trimmed_negedges_")
+id_type = 2
+dim = 30
+k = 5
+coff = 0 #1/15
+ord = 15
+
+pbmc3k_dataprep <- FindNeighbors(pbmc3k_dataprep, reduction = "pca", dims = 1:dim, k.param=k, compute.SNN=TRUE) #prune.SNN=coff
+
+pbmc3k_dataprep_snn_temp <- pbmc3k_dataprep@graphs[["SCT_snn"]]
+
+dim(pbmc3k_dataprep_snn_temp)
+pbmc3k_dataprep_snn <- pbmc3k_dataprep_snn_temp - diag(n)
+
+remove(pbmc3k_dataprep_snn_temp)
+```
+```{r}
+# ------- limitation of nodes degrees SYMMETRIC -------
+for (i in 1:n){
+  to_delete <- order(pbmc3k_dataprep_snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+  pbmc3k_dataprep_snn[,i][to_delete] <- integer(n-ord)
+  pbmc3k_dataprep_snn[i,][to_delete] <- integer(n-ord)
+}
+```
+
+```{r, eval=FALSE}
+# ------- limitation of nodes degrees UNSYMMETRIC -------
+for (i in 1:n){
+  to_delete <- order(pbmc3k_dataprep_snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+  pbmc3k_dataprep_snn[,i][to_delete] <- integer(n-ord)
+}
+```
+
+```{r, eval=FALSE}
+# ------- Enhance shared edges (may want to repeat multiple times) -------
+library(Matrix)
+
+# Method 2
+mutual = matrix(0,n,n)
+
+for (i in 1:n){
+    mutual[i,] <- pbmc3k_dataprep_snn[i,] & pbmc3k_dataprep_snn[,i] 
+}
+nnzero(mutual)
+
+pbmc3k_dataprep_snn_old <- pbmc3k_dataprep_snn
+for (i in 1:n){
+    pbmc3k_dataprep_snn[i,] <- pbmc3k_dataprep_snn_old[i,]+2*(mutual[i,])
+}
+```
+
+```{r, eval=FALSE}
+# ------- Enhance shared edges (may want to repeat multiple times) -------
+pbmc3k_dataprep_snn_old <- pbmc3k_dataprep_snn
+for (i in 1:n){
+    pbmc3k_dataprep_snn[i,] <- pbmc3k_dataprep_snn_old[i,]+pbmc3k_dataprep_snn_old[,i]
+}
+
+mean(as.matrix(pbmc3k_dataprep_snn))
+mean(as.matrix(pbmc3k_dataprep_snn_old))
+
+remove(pbmc3k_dataprep_snn_old)
+```
+
+```{r, eval=FALSE}
+# ------- limitation of nodes degrees #2 -------
+ord2 = 15
+for (i in 1:n){
+  to_delete <- order(pbmc3k_dataprep_snn[,i], decreasing = TRUE)[seq(ord2+1,n,1)]
+  pbmc3k_dataprep_snn[,i][to_delete] <- integer(n-ord2)
+  pbmc3k_dataprep_snn[i,][to_delete] <- integer(n-ord2)
+}
+```
+
+## Plot and save graphs 
+```{r setup}
+library(reticulate)
+virtualenv_create("scrna_proj")
+# py_install(c("networkx","matplotlib"), envname = "scrna_proj")
+use_virtualenv("scrna_proj")
+```
+
+```{python}
+import numpy as np
+import networkx as nx
+from matplotlib import pyplot as plt
+
+id_type, type = int(r.id_type)-1, r.type
+n = int(r.n)
+k = int(r.k)
+ord = int(r.ord)
+dim = int(r.dim)
+
+file_name = ''.join(["../../graphs_data_prep/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), "enhq.gexf"])
+
+G = nx.from_numpy_matrix(r.pbmc3k_dataprep_snn)
+nx.write_gexf(G, file_name)
+
+# len(G.edges())
+# G.degree()
+
+G = nx.read_gexf(file_name)
+pos = nx.spring_layout(G)
+plt.cla()
+nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+file_name = ''.join(["../../graphs_data_prep/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), "enhq.png"])
+plt.savefig(file_name, bbox_inches='tight')
+```

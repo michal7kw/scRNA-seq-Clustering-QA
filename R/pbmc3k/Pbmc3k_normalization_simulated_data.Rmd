@@ -1,0 +1,1341 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Libraries
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(bspec)
+library(sctransform)
+library(cowplot)
+library(gridExtra)
+library(dplyr)
+library(patchwork)
+library(sctransform)
+library(glmGamPoi)
+library(gtable)
+library(grid)
+```
+
+# Loading Data (pmbc)
+
+Load data directly from saved Seurat Objects pbmc3k_init
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+pbmc3k <- readRDS(file = "../../data/pbmc_data/pbmc3k/pbmc3k_init.rds")
+pbmc3k[["percent.mt"]] <- PercentageFeatureSet(pbmc3k, pattern = "^MT-")
+```
+
+# Data cleaning
+
+## Raw data plot: nFeature_RNA, nCount_RNA, percent.mt pbmc3k
+
+```{r}
+VlnPlot(pbmc3k, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+plot1 <- FeatureScatter(pbmc3k, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc3k, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+```
+
+## Clean data - remove low nFeatue and high percent.mt pbmc3k
+
+```{r}
+pbmc3k <- subset(pbmc3k, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+```
+
+## Clean data plot: nFeature_RNA, nCount_RNA, percent.mt pbmc3k
+
+```{r}
+VlnPlot(pbmc3k, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+plot1 <- FeatureScatter(pbmc3k, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc3k, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+```
+
+Create data copies (to test normalization methods) pbmc3k
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+pbmc3k_log <- pbmc3k #[,1:512]
+pbmc3k_SR <- pbmc3k
+pbmc3k_scT <- pbmc3k
+```
+
+```{r}
+# remove(pbmc3k)
+```
+
+# Data Noralization
+
+## Log Normalize data + FeaturePlot
+
+```{r}
+pbmc3k_log <- NormalizeData(pbmc3k_log, normalization.method = "LogNormalize", scale.factor = 10000)
+pbmc3k_log <- FindVariableFeatures(pbmc3k_log, selection.method = "vst", nfeatures = 3000)
+```
+
+## SR Normalize data + FeaturePlot
+
+```{r}
+pbmc3k_SR@assays$RNA@data <- pbmc3k_SR@assays$RNA@data/10000
+pbmc3k_SR@assays$RNA@data <- sqrt(pbmc3k_SR@assays$RNA@data)
+pbmc3k_SR <- FindVariableFeatures(pbmc3k_SR, selection.method = "vst", nfeatures = 3000)
+```
+
+## scTransform
+
+```{r}
+# Note that this single command replaces NormalizeData(), ScaleData(), and FindVariableFeatures().
+pbmc3k_scT <- SCTransform(pbmc3k_scT, method = "glmGamPoi", vars.to.regress = "percent.mt", verbose = FALSE)
+```
+
+## Show Top Features
+
+```{r, eval=FALSE}
+top10_log <- head(VariableFeatures(pbmc3k_log), 10)
+top10_SR <- head(VariableFeatures(pbmc3k_SR), 10)
+top10_scT <- head(VariableFeatures(pbmc3k_scT), 10)
+
+plot1_log <- VariableFeaturePlot(pbmc3k_log)
+plot2_log <- ggplotGrob(LabelPoints(plot = plot1_log, points = top10_log, repel = TRUE)+ ggtitle("pbmc3k_log"))
+
+plot1_SR <- VariableFeaturePlot(pbmc3k_SR)
+plot2_SR <- ggplotGrob(LabelPoints(plot = plot1_SR, points = top10_SR, repel = TRUE)+ ggtitle("pbmc3k_SR"))
+
+plot1_scT <- VariableFeaturePlot(pbmc3k_scT)
+plot2_scT <- ggplotGrob(LabelPoints(plot = plot1_scT, points = top10_scT, repel = TRUE)+ ggtitle("pbmc3k_scT"))
+
+png(file="../../output/Variable_Features_combined.png")
+grid.arrange(plot2_log, plot2_SR, plot2_scT, nrow = 3)
+dev.off()
+
+grid.arrange(plot2_log, plot2_SR, plot2_scT, nrow = 3)
+```
+
+```{r}
+remove(top10_log, top10_SR, top10_scT)
+remove(plot1_log, plot2_log, plot1_SR, plot2_SR, plot1_scT, plot2_scT)
+```
+
+# Data Histograms
+
+## GAPDH Gene histogram
+
+[Droplet barcoding for single-cell transcriptomics applied to embryonic stem cells 2015]
+
+```{r}
+count_GSM1599500 <- read.csv("../../data/additional_data/GSM1599501_K562_pure_RNA.csv", row.names = 1)
+
+
+grep("GAPDH", rownames(count_GSM1599500), value = T)
+GAPDH_count <- count_GSM1599500["GAPDH",]
+GAPDH_count <- data.frame(reads=as.numeric(GAPDH_count))
+head(GAPDH_count)
+
+
+png(file="../../output/GAPDH_distribution.png")
+ggplot(GAPDH_count, aes(x=reads)) + 
+  geom_histogram(binwidth=8, color="black", fill="white") +
+  labs(title="GAPDH distribution",
+        y ="Cells", x = "Transcripts")
+dev.off()
+```
+
+```{r}
+ggplot(GAPDH_count, aes(x=reads)) + 
+  geom_histogram(binwidth=8, color="black", fill="white") +
+  labs(title="GAPDH distribution",
+        y ="Cells", x = "Transcripts")
+```
+
+# Evaluation of normalisation techniques
+
+## Get Genes' SNR (singnal to noise ratio)
+
+```{r}
+means <- apply(count_GSM1599500, 1, mean)
+sds <- apply(count_GSM1599500, 1, sd)
+snrs <- means/sds
+```
+
+```{r}
+plot(x=log(sqrt(means)), y=log(snrs), xlab = "Square root of mean expression", ylab = "SNR")
+```
+
+```{r}
+remove(count_GSM1599500, GAPDH_count, means, sds, snrs)
+```
+
+# Dimensionality reduction
+
+## PCA (lognormalized data)
+
+[ScaleData](https://satijalab.org/seurat/reference/scaledata)
+
+```{r}
+pbmc3k_log <- ScaleData(pbmc3k_log, vars.to.regress = "percent.mt")
+pbmc3k_log <- RunPCA(pbmc3k_log, features = VariableFeatures(object = pbmc3k_log))
+```
+
+```{r}
+# VizDimLoadings(pbmc3k_log, dims = 1:3, reduction = "pca")
+ElbowPlot(pbmc3k_log)
+DimPlot(pbmc3k_log, reduction = "pca")
+
+png(file="../../output/PCA_lognorm.png")
+FeaturePlot(object = pbmc3k_log, features = "MS4A1")
+dev.off()
+```
+
+## PCA (square-root)
+
+```{r}
+pbmc3k_SR <- ScaleData(pbmc3k_SR, vars.to.regress = "percent.mt")
+pbmc3k_SR <- RunPCA(pbmc3k_SR, features = VariableFeatures(object = pbmc3k_SR))
+```
+
+```{r}
+ElbowPlot(pbmc3k_SR)
+DimPlot(pbmc3k_SR, reduction = "pca")
+
+png(file="../../output/PCA_srnorm.png")
+FeaturePlot(object = pbmc3k_SR, features = "MS4A1")
+dev.off()
+```
+
+## PCA (scTransform)
+
+```{r}
+# ScaleData is included in scTransform()
+pbmc3k_scT <- RunPCA(pbmc3k_scT, features = VariableFeatures(object = pbmc3k_scT))
+```
+
+```{r}
+ElbowPlot(pbmc3k_scT)
+DimPlot(pbmc3k_scT, reduction = "pca")
+
+png(file="../../output/PCA_scTnorm.png")
+FeaturePlot(object = pbmc3k_scT, features = "MS4A1")
+dev.off()
+```
+
+## Clustering (lognormalized)
+
+```{r}
+pbmc3k_log <- FindNeighbors(pbmc3k_log, reduction = "pca", dims = 1:10)
+pbmc3k_log <- FindClusters(pbmc3k_log, verbose = FALSE, resolution = 0.5, algorithm = 1)
+
+pbmc3k_log <- RunUMAP(pbmc3k_log, reduction = "pca", dims = 1:10)
+pbmc3k_log <- RunTSNE(pbmc3k_log, reduction = "pca", dims = 1:10)
+
+png(file="../../output/UMAP_lognorm2.png", width = 800, height = 500)
+DimPlot(pbmc3k_log, reduction = "umap", label = TRUE) + ggtitle("UMAP pbmc3k_log")
+dev.off()
+
+png(file="../../output/tSNE_lognorm2.png", width = 800, height = 500)
+DimPlot(pbmc3k_log, reduction = "tsne", label = TRUE) + ggtitle("TSNE pbmc3k_log")
+dev.off()
+```
+
+## Clustering (square-root)
+
+```{r}
+pbmc3k_SR <- FindNeighbors(pbmc3k_SR, reduction = "pca", dims = 1:10)
+pbmc3k_SR <- FindClusters(pbmc3k_SR, verbose = FALSE, resolution = 0.5, algorithm = 1)
+
+pbmc3k_SR <- RunUMAP(pbmc3k_SR, reduction = "pca", dims = 1:10)
+pbmc3k_SR <- RunTSNE(pbmc3k_SR, reduction = "pca", dims = 1:10)
+
+png(file="../../output/UMAP_srnorm2.png", width = 800, height = 500)
+DimPlot(pbmc3k_SR, reduction = "umap", label = TRUE) + ggtitle("UMAP pbmc3k_SR")
+dev.off()
+
+png(file="../../output/tSNE_srnorm2.png", width = 800, height = 500)
+DimPlot(pbmc3k_SR, reduction = "tsne", label = TRUE) + ggtitle("TSNE pbmc3k_SR")
+dev.off()
+```
+
+## Clustering (scTransorm)
+
+```{r}
+pbmc3k_scT <- FindNeighbors(pbmc3k_scT, dims = 1:10, verbose = FALSE)
+pbmc3k_scT <- FindClusters(pbmc3k_scT, verbose = FALSE, resolution = 0.5, algorithm = 1)
+
+pbmc3k_scT <- RunUMAP(pbmc3k_scT, reduction = "pca", dims = 1:10)
+pbmc3k_scT <- RunTSNE(pbmc3k_scT, reduction = "pca", dims = 1:10)
+
+png(file="../../output/UMAP_scTnorm2.png", width = 800, height = 500)
+DimPlot(pbmc3k_scT, reduction = "umap", label = TRUE) + ggtitle("UMAP pbmc3k_scT")
+dev.off()
+
+png(file="../../output/tSNE_scTnorm2.png", width = 800, height = 500)
+DimPlot(pbmc3k_scT, reduction = "tsne", label = TRUE) + ggtitle("TSNE pbmc3k_scT")
+dev.off()
+```
+
+```{r}
+saveRDS(pbmc3k_log, "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_log.rds")
+saveRDS(pbmc3k_SR, "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_SR.rds")
+saveRDS(pbmc3k_scT, "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_scT.rds")
+```
+
+# Annotating the cells
+
+## Reference
+
+```{r}
+pbmc10k_ref<- readRDS("../../data/pbmc_data/pbmc10k_v3/pbmc_10k_v3.rds")
+table(pbmc10k_ref@meta.data$celltype)
+```
+
+```{r}
+DimPlot(pbmc10k_ref, group.by = "celltype", label = TRUE, repel = TRUE) + NoLegend() + ggtitle("10k pbmc reference")
+```
+
+## Finding Marker Genes pbmc3k [reference](https://www.singlecellcourse.org/single-cell-rna-seq-analysis-using-seurat.html#cell-type-annotation-using-singler)
+
+```{r}
+pbmc3k_log_markers <- FindAllMarkers(pbmc3k_log, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0)
+pbmc3k_top_2_log <- pbmc3k_log_markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 2, order_by = avg_log2FC)
+  
+print(pbmc3k_top_2_log$gene,n=nrow(pbmc3k_top_2_log$gene))
+
+pbmc3k_SR_markers <- FindAllMarkers(pbmc3k_SR, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0)
+pbmc3k_top_2_SR <- pbmc3k_SR_markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 2, order_by = avg_log2FC)
+  
+print(pbmc3k_top_2_SR$gene,n=nrow(pbmc3k_top_2_SR$gene))
+
+pbmc3k_scT_markers <- FindAllMarkers(pbmc3k_scT, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0)
+pbmc3k_top_2_scT <- pbmc3k_scT_markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 2, order_by = avg_log2FC)
+  
+print(pbmc3k_top_2_scT$gene,n=nrow(pbmc3k_top_2_scT$gene))
+```
+
+```{r, eval=FALSE}
+saveRDS(pbmc3k_log_markers, "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_log_markers.rds")
+saveRDS(pbmc3k_SR_markers, "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_SR_markers.rds")
+saveRDS(pbmc3k_scT_markers, "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_scT_markers.rds")
+```
+
+```{r}
+png(file="../../output/log_markers.png", width = 1920, height = 1080)
+FeaturePlot(pbmc3k_log, features = c(pbmc3k_top_2_log$gene)) + ggtitle("log_markers")
+dev.off()
+
+png(file="../../output/SR_markers.png", width = 1920, height = 1080)
+FeaturePlot(pbmc3k_SR, features = c(pbmc3k_top_2_SR$gene)) + ggtitle("SR_markers")
+dev.off()
+
+png(file="../../output/scT_markers.png", width = 1920, height = 1080)
+FeaturePlot(pbmc3k_scT, features = c(pbmc3k_top_2_scT$gene)) + ggtitle("scT_markers")
+dev.off()
+```
+
+```{r, eval=FALSE}
+pbmc3k_log_markers <- readRDS(file = "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_log_markers.rds")
+
+pbmc3k_SR_markers <- readRDS(file = "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_SR_markers.rds")
+
+pbmc3k_scT_markers <- readRDS(file = "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_scT_markers.rds")
+```
+
+```{r}
+table(pbmc3k_log_markers$cluster)
+```
+
+```{r}
+top3_markers <- as.data.frame(pbmc3k_log_markers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC))
+top3_markers
+```
+
+
+## Clasification power
+
+```{r, eval=FALSE}
+pbmc3k_log_cell_types <- readRDS(file = "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_log_cell_types.rds")
+
+pbmc3k_SR_cell_types<- readRDS(file = "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_SR_cell_types.rds")
+
+pbmc3k_scT_cell_types <- readRDS(file = "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_scT_cell_types.rds")
+```
+
+```{r, eval=FALSE}
+library(SingleR)
+monaco.ref<- celldex::MonacoImmuneData()
+sce <- as.SingleCellExperiment(DietSeurat(pbmc3k_log))
+
+monaco.main_log <- SingleR(test = sce,assay.type.test = 1,ref = monaco.ref,labels = monaco.ref$label.main)
+
+monaco.fine_log <- SingleR(test = sce,assay.type.test = 1,ref = monaco.ref,labels = monaco.ref$label.fine)
+```
+
+```{r, eval=FALSE}
+table(monaco.main_log$pruned.labels)
+```
+
+```{r, eval=FALSE}
+table(monaco.fine_log$pruned.labels)
+```
+
+```{r, eval=FALSE}
+pbmc3k_log@meta.data$monaco.main <- monaco.main_log$pruned.labels
+pbmc3k_log@meta.data$monaco.fine <- monaco.fine_log$pruned.labels
+```
+
+```{r, eval=FALSE}
+pbmc3k_log <- SetIdent(pbmc3k_log, value = "monaco.main")
+
+png(file="../../output/log_cell_types.png", width = 720, height = 480)
+DimPlot(pbmc3k_log, label = T , repel = T, label.size = 8) + NoLegend() + ggtitle("log_cell_type")
+dev.off()
+```
+
+```{r, eval=FALSE}
+sce <- as.SingleCellExperiment(DietSeurat(pbmc3k_scT))
+
+monaco.main_scT <- SingleR(test = sce,assay.type.test = 1,ref = monaco.ref,labels = monaco.ref$label.main)
+
+monaco.fine_scT <- SingleR(test = sce,assay.type.test = 1,ref = monaco.ref,labels = monaco.ref$label.fine)
+```
+
+```{r, eval=FALSE}
+pbmc3k_scT@meta.data$monaco.main <- monaco.main_scT$pruned.labels
+pbmc3k_scT@meta.data$monaco.fine <- monaco.fine_scT$pruned.labels
+```
+
+```{r, eval=FALSE}
+pbmc3k_scT <- SetIdent(pbmc3k_scT, value = "monaco.main")
+
+png(file="./output/scT_cell_types.png", width = 720, height = 480)
+DimPlot(pbmc3k_scT, label = T , repel = T, label.size = 8) + NoLegend() + ggtitle("scT_cell_types")
+dev.off()
+```
+
+```{r, eval=FALSE}
+saveRDS(pbmc3k_log, "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_log_cell_types.rds")
+saveRDS(pbmc3k_SR, "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_SR_cell_types.rds")
+saveRDS(pbmc3k_scT, "../../data/pbmc_data/pbmc_3k_generated/pbmc3k_scT_cell_types.rds")
+```
+
+```{r, eval=FALSE}
+remove(sce)
+```
+
+# pbmc10k version
+
+## Load data directly from files and create/save Seurat Objects pbmc10k
+
+```{r, eval=FALSE}
+pbmc10k_data <- Read10X(data.dir = "../../data/pbmc_data/pbmc10k/filtered_feature_bc_matrix/hg19")
+pbmc10k <- CreateSeuratObject(counts = pbmc10k_data, project = "pbmc10k", min.cells = 3, min.features = 200)
+saveRDS(pbmc, "data/pbmc_data/pbmc10k_v1/pbmc10k_init.rds")
+```
+
+## Load data from saved Seurat Objects pbmc10k
+
+```{r, eval=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+pbmc10k <- readRDS(file = "../../data/pbmc_data/pbmc10k_v1/pbmc10k_init.rds")
+pbmc10k[["percent.mt"]] <- PercentageFeatureSet(pbmc10k, pattern = "^MT-")
+pbmc10k
+```
+
+## Clean data
+```{r, eval=FALSE}
+VlnPlot(pbmc10k, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+plot1 <- FeatureScatter(pbmc10k, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc10k, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+```
+
+```{r, eval=FALSE}
+pbmc10k <- subset(pbmc10k, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 25)
+```
+
+```{r, eval=FALSE}
+VlnPlot(pbmc10k, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+plot1 <- FeatureScatter(pbmc10k, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc10k, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+```
+
+## Test normalization methods pbmc10k
+
+```{r, eval=FALSE, warning=FALSE, message=FALSE, echo=FALSE}
+pbmc10k_log <- pbmc10k
+pbmc10k_SR <- pbmc10k
+pbmc10k_scT <- pbmc10k
+```
+
+### log
+
+```{r, eval=FALSE}
+pbmc10k_log <- NormalizeData(pbmc10k_log, normalization.method = "LogNormalize", scale.factor = 10000)
+pbmc10k_log <- FindVariableFeatures(pbmc10k_log, selection.method = "vst", nfeatures = 2000)
+
+pbmc10k_log <- ScaleData(pbmc10k_log) # isn't this already included in lognorm?
+pbmc10k_log <- RunPCA(pbmc10k_log, features = VariableFeatures(object = pbmc10k_log))
+
+pbmc10k_log <- FindNeighbors(pbmc10k_log, reduction = "pca", dims = 1:10)
+pbmc10k_log <- FindClusters(pbmc10k_log, resolution = 0.5, algorithm = 1)
+
+pbmc10k_log <- RunUMAP(pbmc10k_log, reduction = "pca", dims = 1:10)
+pbmc10k_log <- RunTSNE(object = pbmc10k_log, dims.use = 1:10, do.fast = TRUE)
+
+# note that you can set do.label=T to help label individual clusters
+DimPlot(object = pbmc10k_log, reduction = "tsne", label = TRUE) + ggtitle("tSNE pbmc10k_log")
+DimPlot(pbmc10k_log, reduction = "umap", label = TRUE) + ggtitle("UMAP pbmc10k_log")
+```
+
+### SR
+
+```{r, eval=FALSE}
+pbmc10k_SR@assays$RNA@data <- pbmc10k_SR@assays$RNA@data/10000
+pbmc10k_SR@assays$RNA@data <- sqrt(pbmc10k_SR@assays$RNA@data)
+pbmc10k_SR <- FindVariableFeatures(pbmc10k_SR, selection.method = "vst", nfeatures = 2000)
+
+pbmc10k_SR <- ScaleData(pbmc10k_SR)
+pbmc10k_SR <- RunPCA(pbmc10k_SR, features = VariableFeatures(object = pbmc10k_SR))
+
+pbmc10k_SR <- FindNeighbors(pbmc10k_SR, reduction = "pca", dims = 1:20)
+pbmc10k_SR <- FindClusters(pbmc10k_SR, resolution = 0.5, algorithm = 1)
+
+
+pbmc10k_SR <- RunUMAP(pbmc10k_SR, reduction = "pca", dims = 1:20)
+DimPlot(pbmc10k_SR, reduction = "umap", label = TRUE) + ggtitle("pbmc10k_SR")
+```
+
+### scT
+
+```{r, eval=FALSE}
+pbmc10k_scT <- SCTransform(pbmc10k_scT, method = "glmGamPoi", vars.to.regress = "percent.mt", verbose = FALSE)
+
+pbmc10k_scT <- RunPCA(pbmc10k_scT, verbose = FALSE)
+pbmc10k_scT <- RunUMAP(pbmc10k_scT, dims = 1:30, verbose = FALSE)
+
+pbmc10k_scT <- FindNeighbors(pbmc10k_scT, dims = 1:30, verbose = FALSE)
+pbmc10k_scT <- FindClusters(pbmc10k_scT, verbose = FALSE)
+
+DimPlot(pbmc10k_scT, label = TRUE) + ggtitle("pbmc10k_scT")
+```
+
+## Get Genes' SNR (singnal to noise ratio)
+
+```{r, eval=FALSE}
+system.time(pbmc10k_SR@assays[["RNA"]]@meta.features$means <- apply(pbmc10k_SR@assays$RNA@counts, 1, mean))
+system.time(pbmc10k_SR@assays[["RNA"]]@meta.features$sds <- apply(pbmc10k_SR@assays$RNA@counts, 1, sd))
+system.time(pbmc10k_SR@assays[["RNA"]]@meta.features$snrs <- pbmc10k_SR@assays[["RNA"]]@meta.features$means/pbmc10k_SR@assays[["RNA"]]@meta.features$sds)
+```
+
+```{r, eval=FALSE}
+plot(x=log(sqrt(pbmc10k_SR@assays[["RNA"]]@meta.features$means)), y=log(pbmc10k_SR@assays[["RNA"]]@meta.features$snrs), xlab = "Square root of mean expression", ylab = "SNR")
+```
+
+# Evaluation of clustering on QA
+
+## Data subsetting and preprocessing
+### subsetting
+```{r}
+pbmc3k <- readRDS(file = "../../data/pbmc_data/pbmc3k/pbmc3k_init.rds")
+pbmc3k[["percent.mt"]] <- PercentageFeatureSet(pbmc3k, pattern = "^MT-")
+pbmc3k <- subset(pbmc3k, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+VlnPlot(pbmc3k, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+plot1 <- FeatureScatter(pbmc3k, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc3k, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+# pbmc3k_QA <- pbmc3k
+# pbmc3k_QA <- pbmc3k[,1:512]
+# pbmc3k_QA <- pbmc3k[,1:256]
+pbmc3k_QA <- pbmc3k[,1:128]
+```
+
+```{r}
+pbmc3k_QA <- SCTransform(pbmc3k_QA, method = "glmGamPoi", vars.to.regress = "percent.mt", verbose = FALSE)
+
+pbmc3k_QA <- RunPCA(pbmc3k_QA, features = VariableFeatures(object = pbmc3k_QA))
+ElbowPlot(pbmc3k_QA)
+DimPlot(pbmc3k_QA, reduction = "pca")
+```
+
+### Neighbours evaluation, SNN
+```{r}
+n = ncol(pbmc3k_QA)
+dim(pbmc3k_QA)
+
+type = c("_", "_trimmed_", "_negedges_", "_trimmed_negedges_")
+id_type = 2
+dim = 15
+k = 5
+coff = 1/15
+ord = 8
+
+pbmc3k_QA <- FindNeighbors(pbmc3k_QA, reduction = "pca", dims = 1:dim, k.param=k, prune.SNN=coff, compute.SNN=TRUE)
+
+pbmc3k_QA_snn <- pbmc3k_QA@graphs[["SCT_snn"]]
+# pbmc3k_QA_knn <- pbmc3k_QA@graphs[["SCT_nn"]]
+
+dim(pbmc3k_QA_snn)
+pbmc3k_QA_snn <- pbmc3k_QA_snn - diag(n)
+
+# head(pbmc3k_QA_snn)
+
+if (id_type==1 || id_type==2){
+  # --- only positive edges ---
+  pbmc3k_QA_snn <- round(pbmc3k_QA_snn, digits=2)
+} else {
+  # --- also negative edges ---
+  pbmc3k_QA_snn <- round(pbmc3k_QA_snn, digits=2)
+  less_than <- pbmc3k_QA_snn < 0.16 & pbmc3k_QA_snn != 0
+  pbmc3k_QA_snn[less_than] <- -0.3
+}
+
+colSums(pbmc3k_QA_snn != 0)
+```
+
+### trimming
+```{r}
+for (i in 1:n){
+  to_delete <- order(pbmc3k_QA_snn[,i], decreasing = TRUE)[seq(ord+1,n,1)]
+  pbmc3k_QA_snn[,i][to_delete] <- integer(n-ord)
+  pbmc3k_QA_snn[i,][to_delete] <- integer(n-ord)
+}
+colSums(pbmc3k_QA_snn != 0)
+rowSums(pbmc3k_QA_snn != 0)
+```
+
+### Plotting
+```{r setup}
+library(reticulate)
+virtualenv_create("scrna_proj")
+# py_install(c("networkx","matplotlib"), envname = "scrna_proj")
+use_virtualenv("scrna_proj")
+```
+
+```{python}
+import numpy as np
+import networkx as nx
+from matplotlib import pyplot as plt
+
+id_type, type = int(r.id_type)-1, r.type
+n = int(r.n)
+k = int(r.k)
+ord = int(r.ord)
+dim = int(r.dim)
+
+
+file_name = ''.join(["../../graphs/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), ".gexf"])
+
+G = nx.from_numpy_matrix(r.pbmc3k_QA_snn)
+nx.write_gexf(G, file_name)
+
+# len(G.edges())
+# G.degree()
+
+G = nx.read_gexf(file_name)
+pos = nx.spring_layout(G)
+plt.cla()
+nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+file_name = ''.join(["../../graphs/", str(n), "_graph_snn", "_k", str(k), "_dim", str(dim), type[id_type], str(ord), ".png"])
+plt.savefig(file_name, bbox_inches='tight')
+```
+
+### iteration through parameters
+```{r}
+np <- import("numpy")
+nx <- import("networkx")
+
+n <- as.integer(ncol(pbmc3k_QA))
+k_range <- as.integer(c(5,15))
+coff_range <- c(0, 0.3, 0.6)
+d_range <- as.integer(c(5, 15, 30))
+
+for (k in c(5,15)){
+  for (coff in c(0, 0.3, 0.6)){
+    for (d in c(5, 15, 30)){
+      pbmc3k_QA <- FindNeighbors(pbmc3k_QA, reduction = "pca", dims = 1:d, k.param=k, prune.SNN = coff)
+      pbmc3k_QA_snn <- pbmc3k_QA@graphs[["SCT_snn"]]
+      pbmc3k_QA_snn <- pbmc3k_QA_snn - diag(n)
+      pbmc3k_QA_snn <- round(pbmc3k_QA_snn, digits=2)
+      
+      G = nx$from_numpy_matrix(pbmc3k_QA_snn)
+      nx$write_gexf(G, paste0("../../graphs/diff_params/graph_snn_n", n, "_k", k, "_coff", coff, "_d", d, ".gexf"))
+    }
+  }
+}
+```
+
+```{python}
+import networkx as nx
+import matplotlib
+matplotlib.use("agg")
+from matplotlib import pyplot as plt
+
+n = r.n
+coff_range = [0, 0.3, 0.6]
+
+for k in r.k_range:
+  print("k:", k)
+  for coff in coff_range:
+    print("coff:", coff)
+    for d in r.d_range:
+      print("d:", d)
+      file_name = ''.join(["../../graphs/diff_params/graph_snn_n", str(n), "_k", str(k), "_coff", str(coff), "_d", str(d), ".gexf"])
+      G = nx.read_gexf(file_name)
+      pos = nx.spring_layout(G)
+      nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+      nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+      file_name = ''.join(["../../graphs_diff_params/graph_snn_n", str(n), "_k", str(k), "_coff", str(coff), "_d", str(d), ".png"])
+      print(file_name)
+      plt.savefig(file_name, bbox_inches='tight')
+      plt.cla()
+```
+
+# OLD Code Chunks, not to use 
+## OLD trimming
+```{r, eval=FALSE}
+head(pbmc3k_QA_snn)
+colSums(pbmc3k_QA_snn != 0)
+
+#len = l*(l+1)/2
+len = n*ord
+# edge_list <- vector(mode = "list", length = len)
+edge_list_m <- matrix(0,len, 3)
+nth_edge <- 1
+
+# ncores = 4
+# cl <- makeCluster(ncores, type="PSOCK")
+
+for (i in 1:n){
+  pbmc3k_QA_snn_ord <- order(pbmc3k_QA_snn[,i], decreasing = TRUE)[1:3]
+  for(j in pbmc3k_QA_snn_ord){
+    # edge_list[[nth_edge]] <- c(i-1,j-1, pbmc3k_QA_snn[i,j])
+    edge_list_m[nth_edge,] <- c(i-1,j-1, pbmc3k_QA_snn[i,j])
+    nth_edge <- nth_edge + 1
+  }
+}
+
+# edge_list_ml <- edge_list_m[order(edge_list_m[,1], decreasing = FALSE),]
+edge_list_ml <- edge_list_m
+edge_list_mr <- edge_list_m[,c(2,1,3)]
+
+edges_limit = 5
+for (un in unique(edge_list_ml[,1])) {
+  seoectedl <- which(edge_list_ml[,1]==un)
+  selectedr <- which(edge_list_mr[,1]==un)
+  selected <- c(seoectedl, selectedr)
+  num_of_edges = length(selected)
+  
+  if(num_of_edges>edges_limit){
+    num_to_del <- num_of_edges - edges_limit
+    to_delete <- selected[order(edge_list_m[selected,3],decreasing=FALSE)][1:num_to_del]
+    edge_list_m[to_delete,] <- numeric(num_to_del)
+  }
+}
+
+edge_list_m <- edge_list_m[!edge_list_m[,3]==0,]
+
+file_name = paste0("./graphs_csv/", n, "graph_snn", "_k", ord, "_dim", dim, ".csv")
+# write.csv(df, file_name)
+library(MASS)
+write.csv(edge_list_m,file=file_name)
+########################################################
+edge_list_m_comb <- rbind(edge_list_m, edge_list_m[,c(2,1,3)])
+edge_list_m_comb <- edge_list_m_comb[order(edge_list_m_comb[,1], decreasing = FALSE),]
+
+edge_list_m_comb_l <- edge_list_m_comb[order(edge_list_m_comb[,1], decreasing = FALSE),]
+
+edge_list_m_comb_r <- edge_list_m_comb[,c(2,1,3)]
+edge_list_m_comb_r <- edge_list_m_comb_r[order(edge_list_m_comb_r[,1], decreasing = FALSE),]
+
+repeated <- edge_list_m_comb_r[,1]==edge_list_m_comb_l[,1] & edge_list_m_comb_r[,2]==edge_list_m_comb_l[,2]
+
+edge_list_m_comb = edge_list_m_comb[!repeated,]
+
+edges_limit = 5
+
+for (un in unique(edge_list_m_comb[,1])) {
+  selected <- which(edge_list_m_comb[,1]==un)
+  num_of_edges = length(selected)
+  if(num_of_edges>edges_limit){
+    num_to_del <- num_of_edges - edges_limit
+    to_delete <- selected[order(edge_list_m_comb[selected,3],decreasing=FALSE)][1:num_to_del]
+    edge_list_m_comb <- edge_list_m_comb[-to_delete,]
+  }
+}
+
+# edge_list_m <- edge_list_m[order(edge_list_m[,1], decreasing = FALSE),]
+# edge_list_m_rev <- edge_list_m[,c(2,1,3)]
+# edge_list_m_rev <- edge_list_m_rev[order(edge_list_m_rev[,1], decreasing = FALSE),]
+# repeated = edge_list_m_rev[,1]==edge_list_m[,1] & edge_list_m_rev[,2]==edge_list_m[,2]
+
+# df <- t(as.data.frame(edge_list))
+
+# file_name = paste0("./graphs_csv/graph_snn_n", n, "_k", ord, "_coff", coff, "_d", dim, ".csv")
+file_name = paste0("./graphs_csv/", n, "graph_snn", "_k", ord, "_dim", dim, ".csv")
+# write.csv(df, file_name)
+library(MASS)
+write.csv(edge_list_m_comb,file=file_name)
+```
+
+## OLD plot csv
+```{python, eval=FALSE}
+import pandas as pd
+input_data = pd.read_csv(r.file_name, header=0, usecols={1,2,3})
+
+records = input_data.to_records(index=False)
+result = list(records)
+len(result)
+G = nx.Graph()
+G.add_weighted_edges_from(result)
+pos = nx.spring_layout(G)
+
+
+# ------- Check Graph features -------
+len(G.nodes())
+len(G.edges())
+print(sum([val for (node, val) in G.degree()]))
+print([val for (node, val) in G.degree()])
+print(len(G.edges())/len(G.nodes()))
+
+plt.cla()
+
+nx.draw_networkx_nodes(G, pos, node_size=10, nodelist=G.nodes)
+nx.draw_networkx_edges(G, pos, edgelist=G.edges, style='solid', alpha=0.5, width=1)
+
+img_in_name = ''.join(["../../output/", str(n), "_check_point_graph_snn_in_fixed", "_k", str(k), "_dim", str(dim),".png"])
+plt.savefig(img_in_name, bbox_inches='tight')
+```
+
+## OLD rest
+```{r, eval=FALSE}
+library(Seurat)
+pbmc3k_DimRed_Oct_2020 <- readRDS(file = "../../output/pbmc3k_final.rds")
+pbmc3k_DimRed_Oct_2020 <- pbmc3k_log
+```
+
+```{r, eval=FALSE}
+# stores the coordinates for each cell in low-dimensional space.
+head(Embeddings(pbmc3k_DimRed_Oct_2020, reduction = "pca")[, 1:5])
+# stores the weight for each feature along each dimension of the embedding
+head(Loadings(pbmc3k_DimRed_Oct_2020, reduction = "pca")[, 1:5])
+```
+
+```{r, eval=FALSE}
+# d <- dist(t(GetAssayData(pbmc3k_DimRed_Oct_2020, slot = "scale.data")))
+```
+
+```{r, eval=FALSE}
+rna_snn <- pbmc3k_DimRed_Oct_2020@graphs[["RNA_snn"]]
+summary(rna_snn)
+typeof(rna_snn)
+m_rna_snn <- as.matrix(rna_snn)
+typeof(m_rna_snn)
+dim(m_rna_snn)
+length(m_rna_snn)
+length(which(m_rna_snn != 0))
+```
+
+```{r, eval=FALSE}
+subset_rna_snn <- m_rna_snn[1:200,1:200] - diag(200)
+length(subset_rna_snn)
+length(which(subset_rna_snn != 0))
+write.csv(subset_rna_snn, "output/subset_rna_snn.csv")
+
+inv_subset_rna_snn <- matrix(data=1, nrow=nrow(subset_rna_snn), ncol=ncol(subset_rna_snn)) - subset_rna_snn
+write.csv(inv_subset_rna_snn, "output/inv_subset_rna_snn.csv")
+
+inv_subset_rna_snn2 <- subset_rna_snn - diag(200)
+write.csv(inv_subset_rna_snn2, "output/inv_subset_rna_snn2.csv")
+```
+
+```{r, eval=FALSE}
+l = 512
+l = ncol(pbmc3k_DimRed_Oct_2020)
+pbmc3k_DimRed_Oct_2020_sub <- pbmc3k_DimRed_Oct_2020[,1:l]
+pbmc3k_DimRed_Oct_2020_sub <- pbmc3k_log
+pbmc3k_DimRed_Oct_2020_sub <- pbmc3k_DimRed_Oct_2020
+dim(pbmc3k_DimRed_Oct_2020_sub)
+# pbmc3k_DimRed_Oct_2020_sub <- FindNeighbors(pbmc3k_DimRed_Oct_2020_sub, reduction = "pca", dims = 1:16, k.param=30)
+
+pbmc3k_DimRed_Oct_2020_sub <- FindNeighbors(pbmc3k_DimRed_Oct_2020_sub, reduction = "pca", dims = 1:30, k.param=5, prune.SNN = 0)
+
+# KNN
+# pbmc3k_DimRed_Oct_2020_sub_snn <- pbmc3k_DimRed_Oct_2020_sub@graphs[["RNA_nn"]]
+
+#SNN
+pbmc3k_DimRed_Oct_2020_sub_snn <- pbmc3k_DimRed_Oct_2020_sub@graphs[["RNA_snn"]]
+
+dim(pbmc3k_DimRed_Oct_2020_sub_snn)
+
+pbmc3k_DimRed_Oct_2020_sub_snn <- pbmc3k_DimRed_Oct_2020_sub_snn[1:l,1:l] - diag(l)
+
+pbmc3k_DimRed_Oct_2020_sub_snn <- pbmc3k_DimRed_Oct_2020_sub_snn - diag(l)
+# pbmc3k_DimRed_Oct_2020_sub_snn <- as.matrix(pbmc3k_DimRed_Oct_2020_sub_snn)
+
+# write.csv(pbmc3k_DimRed_Oct_2020_sub_snn, "output/pbmc3k_DimRed_Oct_2020_sub_snn.csv")
+head(pbmc3k_DimRed_Oct_2020_sub_snn)
+
+colSums(pbmc3k_DimRed_Oct_2020_sub_snn != 0)
+
+# --- for knn ---
+# edge_list = c()
+# k <- 1
+# 
+# for (i in 1:l){
+#   for(j in i:l)
+#   if (pbmc3k_DimRed_Oct_2020_sub_snn[i,j]==1) {
+#     edge_list[[k]] <- c(i-1,j-1)
+#     k <- k + 1
+#   }
+# }
+
+# --- for snn ---
+pbmc3k_DimRed_Oct_2020_sub_snn <- round(pbmc3k_DimRed_Oct_2020_sub_snn, digits=2)
+
+colSums(pbmc3k_DimRed_Oct_2020_sub_snn != 0)
+
+# len = l*(l+1)/2
+# # edge_list = c()
+# edge_list <- vector(mode = "list", length = l*(l+1)/2)
+# # m = numeric(l)
+# # n = matrix(0, n, m)
+# m = numeric(l*(l+1)/2)
+# n = numeric(l*(l+1)/2)
+# w = numeric(l*(l+1)/2)
+# 
+# k <- 1
+# # ncores = 4
+# # cl <- makeCluster(ncores, type="PSOCK")
+# 
+# for (i in 1:l){
+#   for(j in i:l)
+#   # if (pbmc3k_DimRed_Oct_2020_sub_snn[i,j]!=0) {
+#     edge_list[[k]] <- c(i-1,j-1, pbmc3k_DimRed_Oct_2020_sub_snn[i,j])
+#     # m[k] <- i-1
+#     # n[k] <- j-1
+#     # w[k] <- pbmc3k_DimRed_Oct_2020_sub_snn[i,j]
+#     k <- k + 1
+#   # }
+# }
+
+# 
+# for (i in 1:len){
+#  edge_list[[i]]  <- c(m[i],n[i],w[i])
+# }
+# 
+# df <- t(as.data.frame(edge_list))
+# 
+# write.csv(df, "output/edge_list2v500snn_k10_max.csv")
+```
+
+```{python, eval=FALSE}
+import numpy as np
+import networkx as nx
+
+G = nx.from_numpy_matrix(r.pbmc3k_DimRed_Oct_2020_sub_snn)
+# G = nx.from_numpy_matrix(data, create_using=nx.DiGraph)
+nx.write_gexf(G, "final_graph_snn_5.gexf")
+```
+
+
+```{r, eval=FALSE}
+pbmc3k_DimRed_Oct_2020_sub <- pbmc3k_DimRed_Oct_2020_sub[,1:100]
+pbmc3k_DimRed_Oct_2020_sub <- RunUMAP(pbmc3k_DimRed_Oct_2020_sub, dim=1:10)
+```
+
+## OLD Comparing clusters
+## OLD importing generated QA clusters
+```{python, eval=FALSE}
+import networkx as nx
+# QA_output_name = "final_graph_snn (2).gexf"
+# QA_output_name = "128_graph_snn_k5_dim15_15.gexf"
+QA_output_name = "128_graph_snn_k5_dim15_g0_trimmed_15clean_out.gexf"
+QA_clusters = nx.read_gexf(''.join(["../../dataIn/", QA_output_name]))
+
+x, y = list(QA_clusters.nodes(data=True))[1]
+last = sorted(y.keys())[-1]
+y[last] # return value of the last cluster
+
+# sorted(QA_clusters.nodes(data=True))
+
+QA_clusters_ord = nx.convert_node_labels_to_integers(QA_clusters, first_label=1)
+# sorted(QA_clusters_ord.nodes)
+len(QA_clusters_ord.nodes)
+```
+
+```{python, eval=FALSE}
+# print(QA_clusters.nodes(data=True))
+colors = [y[sorted(y.keys())[-1]] for x,y in sorted(QA_clusters_ord.nodes(data=True))]
+# colors
+len(colors)
+```
+
+## OLD Preparation of subset
+```{r, eval=FALSE}
+pbmc3k <- readRDS(file = "data/pbmc_data/pbmc3k/pbmc3k_init.rds")
+pbmc3k[["percent.mt"]] <- PercentageFeatureSet(pbmc3k, pattern = "^MT-")
+pbmc3k <- subset(pbmc3k, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+
+# pbmc3k_QA <- pbmc3k
+# pbmc3k_QA <- pbmc3k[,1:512]
+# pbmc3k_QA <- pbmc3k[,1:256]
+pbmc3k_QA <- pbmc3k[,1:128]
+```
+
+```{r, eval=FALSE}
+pbmc3k_QA <- SCTransform(pbmc3k_QA, method = "glmGamPoi", vars.to.regress = "percent.mt", verbose = FALSE)
+
+pbmc3k_QA <- RunPCA(pbmc3k_QA, features = VariableFeatures(object = pbmc3k_QA))
+ElbowPlot(pbmc3k_QA)
+DimPlot(pbmc3k_QA, reduction = "pca")
+pbmc3k_QA <- FindNeighbors(pbmc3k_QA, reduction = "pca")
+```
+
+## OLD Merging of MetaData
+```{r, eval=FALSE}
+colors = py$colors
+pbmc3k_QA <- AddMetaData(pbmc3k_QA, metadata=colors, col.name="QA")
+```
+
+```{r, eval=FALSE}
+DimPlot(pbmc3k_QA, reduction = "pca", group.by="QA")
+```
+
+```{r, eval=FALSE}
+pbmc3k_QA <- FindClusters(pbmc3k_QA, verbose = FALSE, resolution = 0.8, algorithm = 1)
+pbmc3k_QA <- RunUMAP(pbmc3k_QA, dim=1:15)
+
+png(file="./output/2_128_clusters_QA.png")
+DimPlot(pbmc3k_QA, reduction = "umap", group.by="QA") # + NoLegend()
+dev.off()
+
+png(file="./output/2_128_clusters_Clasic.png")
+DimPlot(pbmc3k_QA, reduction = "umap", group.by="seurat_clusters") # + NoLegend()
+dev.off()
+```
+
+## OLD Look for the Marker genes
+```{r, eval=FALSE}
+Idents(pbmc3k_QA) <- pbmc3k_QA$seurat_clusters
+
+Classic_pbmc3k_QA_markers <- FindAllMarkers(pbmc3k_QA, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0)
+Classic_pbmc3k_QA_top_2 <- Classic_pbmc3k_QA_markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 2, order_by = avg_log2FC)
+  
+print(Classic_pbmc3k_QA_top_2$gene,n=nrow(Classic_pbmc3k_QA_markers$gene))
+```
+
+```{r, eval=FALSE}
+Idents(pbmc3k_QA) <- pbmc3k_QA$QA
+
+QA_pbmc3k_QA_markers <- FindAllMarkers(pbmc3k_QA, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0)
+QA_pbmc3k_QA_top_2 <- QA_pbmc3k_QA_markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 2, order_by = avg_log2FC)
+  
+print(QA_pbmc3k_QA_top_2$gene,n=nrow(QA_pbmc3k_QA_markers$gene))
+```
+
+```{r, eval=FALSE}
+png(file="./output/2_Classic_markers.png", width = 1920, height = 1080)
+FeaturePlot(pbmc3k_QA, features = c(Classic_pbmc3k_QA_top_2$gene)) + ggtitle("Classic_markers")
+dev.off()
+
+png(file="./output/2_QA_markers.png", width = 1920, height = 1080)
+FeaturePlot(pbmc3k_QA, features = c(QA_pbmc3k_QA_top_2$gene)) + ggtitle("QA_markers")
+dev.off()
+```
+
+## OLD annotation
+```{r, eval=FALSE}
+library(SingleR)
+monaco.ref<- celldex::MonacoImmuneData()
+sce <- as.SingleCellExperiment(DietSeurat(pbmc3k_QA))
+
+monaco.main_log <- SingleR(test = sce,assay.type.test = 1,ref = monaco.ref,labels = monaco.ref$label.main)
+
+monaco.fine_log <- SingleR(test = sce,assay.type.test = 1,ref = monaco.ref,labels = monaco.ref$label.fine)
+```
+
+```{r, eval=FALSE}
+table(monaco.main_log$pruned.labels)
+```
+
+```{r, eval=FALSE}
+table(monaco.fine_log$pruned.labels)
+```
+
+```{r, eval=FALSE}
+pbmc3k_QA@meta.data$monaco.main <- monaco.main_log$pruned.labels
+pbmc3k_QA@meta.data$monaco.fine <- monaco.fine_log$pruned.labels
+```
+
+```{r, eval=FALSE}
+pbmc3k_QA <- SetIdent(pbmc3k_QA, value = "monaco.main")
+
+png(file="./output/pbmc3k_QA_cell_types.png", width = 720, height = 480)
+DimPlot(pbmc3k_QA, label = T , repel = T, label.size = 8) + NoLegend() + ggtitle("pbmc3k_QA_cell_type")
+dev.off()
+```
+
+## OLD continuation 1
+
+```{r, eval=FALSE}
+pbmc3k_DimRed_Oct_2020_sub <- FindClusters(pbmc3k_DimRed_Oct_2020_sub, verbose = FALSE, resolution = 0.5, algorithm = 1)
+DimPlot(pbmc3k_DimRed_Oct_2020_sub, reduction = "umap")
+```
+
+
+```{python, eval=FALSE}
+# print("hello python")
+# import pandas as pd
+# import networkx as nx
+# import matplotlib.pyplot as plt
+# 
+# input_data = pd.read_csv('output/edge_list2.csv', header=0, usecols={1,2})
+# # input_data.shape
+# # print(input_data)
+# records = input_data.to_records(index=False)
+# result = list(records)
+# 
+# G = nx.Graph()
+# 
+# G.add_edges_from(result)
+# 
+# # G = nx.from_pandas_dataframe(input_data)
+# plt.clf()
+# nx.draw(G)
+# plt.show()
+# ```
+# ## to finish
+# 
+# ```{python}
+# print("hello python")
+# import pandas as pd
+# import networkx as nx
+# import matplotlib.pyplot as plt
+# 
+# input_data = pd.read_csv('output/pbmc3k_DimRed_Oct_2020_sub_snn.csv', index_col=0)
+# print(input_data)
+# G = nx.Graph(input_data.values)
+# nx.draw(G)
+```
+
+```{r, eval=FALSE}
+plt <- import('matplotlib.pyplot') 
+plt$show()
+```
+
+```{python, eval=FALSE}
+plt.clf()
+```
+
+```{r, eval=FALSE}
+plt <- import('matplotlib.pyplot') 
+np <- import('numpy')
+
+# np.random.seed(19680801)  # https://github.com/rstudio/reticulate/issues/226
+np$random$seed(19680801L)
+
+# N = 50
+N <- 50L
+# x = np.random.rand(N)
+x <- np$random$rand(N)
+
+# y = np.random.rand(N)
+y <- np$random$rand(N)
+
+# colors = np.random.rand(N)
+colors <- np$random$rand(N)
+
+# area = (30 * np.random.rand(N))**2  # 0 to 15 point radii
+area <- (30 * np$random$rand(N))**2
+
+# plt.scatter(x, y, s=area, c=colors, alpha=0.5)
+plt$scatter(x, y, s=area, c=colors, alpha=0.5)
+
+# plt.show()
+plt$show()
+```
+
+## OLD continuation
+
+```{python, eval=FALSE}
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn import cluster, datasets, mixture
+```
+
+```{python, eval=FALSE}
+np.random.seed(0)
+
+# ============
+# Generate datasets. We choose the size big enough to see the scalability
+# of the algorithms, but not too big to avoid too long running times
+# ============
+n_samples = 1500
+noisy_circles = datasets.make_circles(n_samples=n_samples, factor=0.5, noise=0.05)
+noisy_moons = datasets.make_moons(n_samples=n_samples, noise=0.05)
+blobs = datasets.make_blobs(n_samples=n_samples, random_state=8)
+no_structure = np.random.rand(n_samples, 2), None
+
+# Anisotropicly distributed data
+random_state = 170
+X, y = datasets.make_blobs(n_samples=n_samples, random_state=random_state)
+transformation = [[0.6, -0.6], [-0.4, 0.8]]
+X_aniso = np.dot(X, transformation)
+aniso = (X_aniso, y)
+
+# blobs with varied variances
+varied = datasets.make_blobs(
+    n_samples=n_samples, cluster_std=[1.0, 2.5, 0.5], random_state=random_state
+)
+```
+
+## OLD PCA vs ICA
+
+```{r, eval=FALSE}
+library(tidyverse)
+library(Seurat)
+library(PCAtools)
+pbmc3k_pca_ica <- readRDS(file = "output/pbmc3k_final.rds")
+pbmc3k_pca_ica <- RunICA(pbmc3k_pca_ica, features = VariableFeatures(object = pbmc3k_pca_ica))
+```
+
+```{r, eval=FALSE}
+DimPlot(pbmc3k_pca_ica, reduction = "pca")
+```
+
+```{r, eval=FALSE}
+DimPlot(pbmc3k_pca_ica, reduction = "ica")
+```
+
+```{r, eval=FALSE}
+pca <- pbmc3k_pca_ica@reductions[["pca"]]
+ica <- pbmc3k_pca_ica@reductions[["ica"]]
+
+pairs(pca[,1:4],main="PCA", pch=19, col=randomColor(count=4))
+pairs(ica[,1:4],main="ICA", pch=19, col=randomColor(count=4))
+```
+
+```{r, eval=FALSE}
+BiocManager::install('PCAtools')
+```
+
+```{r, eval=FALSE}
+pbmc3k_pca_ica[["RNA"]]@counts
+```
+
+```{r, eval=FALSE}
+library(PCAtools)
+library(airway)
+library(magrittr)
+
+data('airway')
+airway$dex %<>% relevel('untrt')
+```
+
+```{r, eval=FALSE}
+ens <- rownames(airway)
+
+library(org.Hs.eg.db)
+symbols <- mapIds(org.Hs.eg.db, keys = ens,
+  column = c('SYMBOL'), keytype = 'ENSEMBL')
+symbols <- symbols[!is.na(symbols)]
+symbols <- symbols[match(rownames(airway), names(symbols))]
+rownames(airway) <- symbols
+keep <- !is.na(rownames(airway))
+airway <- airway[keep,]
+```
+
+```{r, eval=FALSE}
+library('DESeq2')
+
+dds <- DESeqDataSet(airway, design = ~ cell + dex)
+dds <- DESeq(dds)
+vst <- assay(vst(dds))
+
+p <- pca(vst, metadata = colData(airway), removeVar = 0.1)
+```
+
+```{r, eval=FALSE}
+library(Biobase)
+library(GEOquery)
+
+# load series and platform data from GEO
+  gset <- getGEO('GSE2990', GSEMatrix = TRUE, getGPL = FALSE)
+  mat <- exprs(gset[[1]])
+
+# remove Affymetrix control probes
+  mat <- mat[-grep('^AFFX', rownames(mat)),]
+
+# extract information of interest from the phenotype data (pdata)
+ idx <- which(colnames(pData(gset[[1]])) %in%
+    c('relation', 'age:ch1', 'distant rfs:ch1', 'er:ch1',
+      'ggi:ch1', 'grade:ch1', 'size:ch1',
+      'time rfs:ch1'))
+  metadata <- data.frame(pData(gset[[1]])[,idx],
+    row.names = rownames(pData(gset[[1]])))
+
+# tidy column names
+  colnames(metadata) <- c('Study', 'Age', 'Distant.RFS', 'ER', 'GGI', 'Grade',
+    'Size', 'Time.RFS')
+
+# prepare certain phenotypes of interest
+  metadata$Study <- gsub('Reanalyzed by: ', '', as.character(metadata$Study))
+  metadata$Age <- as.numeric(gsub('^KJ', NA, as.character(metadata$Age)))
+  metadata$Distant.RFS <- factor(metadata$Distant.RFS,
+    levels = c(0,1))
+  metadata$ER <- factor(gsub('\\?', NA, as.character(metadata$ER)),
+    levels = c(0,1))
+  metadata$ER <- factor(ifelse(metadata$ER == 1, 'ER+', 'ER-'),
+    levels = c('ER-', 'ER+'))
+  metadata$GGI <- as.numeric(as.character(metadata$GGI))
+  metadata$Grade <- factor(gsub('\\?', NA, as.character(metadata$Grade)),
+    levels = c(1,2,3))
+  metadata$Grade <- gsub(1, 'Grade 1', gsub(2, 'Grade 2', gsub(3, 'Grade 3', metadata$Grade)))
+  metadata$Grade <- factor(metadata$Grade, levels = c('Grade 1', 'Grade 2', 'Grade 3'))
+  metadata$Size <- as.numeric(as.character(metadata$Size))
+  metadata$Time.RFS <- as.numeric(gsub('^KJX|^KJ', NA, metadata$Time.RFS))
+
+# remove samples from the pdata that have any NA value
+  discard <- apply(metadata, 1, function(x) any(is.na(x)))
+  metadata <- metadata[!discard,]
+
+# filter the expression data to match the samples in our pdata
+  mat <- mat[,which(colnames(mat) %in% rownames(metadata))]
+
+# check that sample names match exactly between pdata and expression data 
+  all(colnames(mat) == rownames(metadata))
+```
+
+```{r, eval=FALSE}
+p <- pca(mat, metadata = metadata, removeVar = 0.1)
+```
+
+```{r, eval=FALSE}
+p <- pca(pbmc3k_pca_ica[["RNA"]]@counts)
+```
+
+```{r, eval=FALSE}
+pairsplot(p)
+```
