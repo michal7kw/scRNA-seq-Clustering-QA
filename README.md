@@ -1,6 +1,6 @@
 # scRNA-seq-Clustering-QA
 
-[logo](logo.png)
+![logo](logo.png)
 
 ## Installation
 
